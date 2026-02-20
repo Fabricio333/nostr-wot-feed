@@ -26,6 +26,11 @@
       --teal: #94e2d5;
       --overlay-bg: rgba(0,0,0,0.5);
       --dropdown-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      --transition-fast: 0.12s ease;
+      --transition-base: 0.2s ease;
+      --transition-slow: 0.3s ease;
+      --card-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.08);
+      --card-shadow-hover: 0 4px 12px rgba(0,0,0,0.15), 0 2px 4px rgba(0,0,0,0.1);
     }
 
     [data-theme="light"] {
@@ -49,9 +54,16 @@
       --teal: #179299;
       --overlay-bg: rgba(0,0,0,0.3);
       --dropdown-shadow: 0 8px 24px rgba(0,0,0,0.15);
+      --card-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+      --card-shadow-hover: 0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.05);
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
 
     body {
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -72,6 +84,17 @@
       top: 0;
       z-index: 100;
       backdrop-filter: blur(16px);
+    }
+
+    header::after {
+      content: '';
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--accent-dim), transparent);
+      opacity: 0.5;
     }
 
     .header-top {
@@ -103,6 +126,12 @@
       background: var(--accent);
       box-shadow: 0 0 8px var(--accent-dim);
       flex-shrink: 0;
+      animation: brandPulse 3s ease-in-out infinite;
+    }
+
+    @keyframes brandPulse {
+      0%, 100% { box-shadow: 0 0 8px var(--accent-dim); }
+      50% { box-shadow: 0 0 14px var(--accent); }
     }
 
     /* ── Header center — stats chips ──────────────────────────── */
@@ -140,6 +169,10 @@
     .stat:hover {
       background: rgba(255,255,255,0.04);
       color: var(--text-secondary);
+    }
+
+    [data-theme="light"] .stat:hover {
+      background: rgba(0,0,0,0.04);
     }
 
     .stat-value {
@@ -244,6 +277,10 @@
     .header-icon-btn:hover {
       color: var(--text-primary);
       background: rgba(255,255,255,0.06);
+    }
+
+    [data-theme="light"] .header-icon-btn:hover {
+      background: rgba(0,0,0,0.06);
     }
 
     .header-icon-btn.active {
@@ -363,17 +400,29 @@
       color: var(--text-muted);
       margin-bottom: 12px;
       font-weight: 600;
+      padding-left: 10px;
+      border-left: 2px solid var(--accent-dim);
     }
 
     .settings-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 8px 0;
+      padding: 8px 6px;
+      border-radius: 6px;
+      transition: background var(--transition-fast);
+    }
+
+    .settings-row:hover {
+      background: rgba(255,255,255,0.03);
+    }
+
+    [data-theme="light"] .settings-row:hover {
+      background: rgba(0,0,0,0.03);
     }
 
     .settings-row + .settings-row {
-      border-top: 1px solid rgba(255,255,255,0.04);
+      border-top: 1px solid var(--border);
     }
 
     .settings-row label {
@@ -406,7 +455,7 @@
 
     input[type="range"] {
       -webkit-appearance: none;
-      width: 100px;
+      width: 120px;
       height: 4px;
       border-radius: 2px;
       background: var(--border);
@@ -447,8 +496,7 @@
       background: var(--border);
       border-radius: 10px;
       cursor: pointer;
-      transition: background 0.2s;
-      outline: none;
+      transition: background var(--transition-base);
       flex-shrink: 0;
     }
 
@@ -480,7 +528,7 @@
     }
 
     .relay-item + .relay-item {
-      border-top: 1px solid rgba(255,255,255,0.04);
+      border-top: 1px solid var(--border);
     }
 
     .relay-item .relay-url {
@@ -555,7 +603,7 @@
     }
 
     .muted-item + .muted-item {
-      border-top: 1px solid rgba(255,255,255,0.04);
+      border-top: 1px solid var(--border);
     }
 
     .muted-name {
@@ -617,10 +665,12 @@
     .note {
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 14px;
       padding: 16px;
       margin-bottom: 8px;
-      transition: background 0.15s, border-color 0.15s;
+      box-shadow: var(--card-shadow);
+      position: relative;
+      transition: background var(--transition-base), border-color var(--transition-base), box-shadow var(--transition-base), transform var(--transition-base);
     }
 
     .note.note-new {
@@ -630,6 +680,8 @@
     .note:hover {
       background: var(--bg-card-hover);
       border-color: var(--border-hover);
+      box-shadow: var(--card-shadow-hover);
+      transform: translateY(-1px);
     }
 
     .note.untrusted {
@@ -666,12 +718,13 @@
       background-position: center;
       overflow: hidden;
       cursor: pointer;
-      transition: transform 0.15s, box-shadow 0.15s;
+      box-shadow: 0 0 0 2px var(--bg-card), 0 2px 4px rgba(0,0,0,0.1);
+      transition: transform var(--transition-base), box-shadow var(--transition-base);
     }
 
     .avatar:hover {
-      transform: scale(1.08);
-      box-shadow: 0 0 0 2px var(--accent-dim);
+      transform: scale(1.05);
+      box-shadow: 0 0 0 2px var(--accent-dim), 0 2px 8px rgba(0,0,0,0.15);
     }
 
     .avatar img {
@@ -696,7 +749,7 @@
     }
 
     .note-author {
-      font-size: 0.85rem;
+      font-size: 0.92rem;
       font-weight: 600;
       color: var(--text-primary);
       white-space: nowrap;
@@ -742,6 +795,18 @@
       letter-spacing: -0.01em;
     }
 
+    .trust-paths {
+      font-size: 0.6rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+      color: var(--teal);
+      background: rgba(148,226,213,0.12);
+      padding: 1px 6px;
+      border-radius: 8px;
+      letter-spacing: 0.01em;
+    }
+
     .note-time {
       font-size: 0.72rem;
       color: var(--text-muted);
@@ -750,11 +815,13 @@
     }
 
     .note-content {
-      font-size: 0.92rem;
-      line-height: 1.6;
+      font-size: 1rem;
+      line-height: 1.65;
       word-break: break-word;
       white-space: pre-wrap;
       color: var(--text-primary);
+      overflow: hidden;
+      border-radius: 0 0 14px 14px;
     }
 
     /* ── Reply context ─────────────────────────────────────────── */
@@ -814,12 +881,17 @@
 
     .note-content .note-image {
       display: block;
-      max-width: 100%;
+      max-width: calc(100% + 32px);
       max-height: 400px;
-      border-radius: 8px;
-      margin: 8px 0;
+      margin: 8px -16px;
+      border-radius: 0;
       cursor: pointer;
       object-fit: contain;
+    }
+
+    .note-content .note-image:last-child {
+      margin-bottom: -16px;
+      border-radius: 0 0 14px 14px;
     }
 
     .note-content .note-video {
@@ -879,19 +951,28 @@
       background: none;
       border: none;
       color: var(--text-muted);
-      font-size: 0.78rem;
+      font-size: 0.82rem;
       font-family: inherit;
-      padding: 4px 10px;
+      padding: 6px 12px;
       border-radius: 6px;
       cursor: pointer;
-      transition: color 0.15s, background 0.15s;
+      transition: color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
       min-height: 32px;
     }
 
     .note-action:hover {
-      color: var(--text-primary);
-      background: rgba(255,255,255,0.05);
+      transform: scale(1.05);
     }
+
+    .note-action:active {
+      transform: scale(0.95);
+    }
+
+    .note-action.action-reply:hover { color: var(--blue); background: rgba(137,180,250,0.1); }
+    .note-action.action-like:hover { color: var(--red); background: rgba(243,139,168,0.1); }
+    .note-action.action-repost:hover { color: var(--green); background: rgba(166,227,161,0.1); }
+    .note-action.action-zap:hover { color: var(--yellow); background: rgba(249,226,175,0.1); }
+    .note-action.action-bookmark:hover { color: var(--yellow); background: rgba(249,226,175,0.1); }
 
     .note-action.liked { color: var(--red); }
     .note-action.reposted { color: var(--green); }
@@ -936,6 +1017,10 @@
       background: rgba(255,255,255,0.05);
     }
 
+    [data-theme="light"] .note-more-btn:hover {
+      background: rgba(0,0,0,0.05);
+    }
+
     .note-more-btn svg {
       width: 18px;
       height: 18px;
@@ -944,15 +1029,13 @@
     }
 
     .note-dropdown {
-      position: absolute;
-      top: 100%;
-      right: 0;
-      min-width: 220px;
+      position: fixed;
+      min-width: 240px;
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: 10px;
       box-shadow: var(--dropdown-shadow);
-      z-index: 300;
+      z-index: 500;
       overflow: hidden;
       opacity: 0;
       transform: translateY(-4px) scale(0.97);
@@ -1030,10 +1113,6 @@
       user-select: none;
     }
 
-    [data-theme="light"] .note-more-btn:hover {
-      background: rgba(0,0,0,0.05);
-    }
-
     .note-footer {
       margin-top: 6px;
       font-size: 0.7rem;
@@ -1046,10 +1125,16 @@
 
     .reply-composer {
       margin-top: 10px;
-      display: none;
+      max-height: 0;
+      opacity: 0;
+      overflow: hidden;
+      transition: max-height 0.25s ease, opacity 0.2s ease;
     }
 
-    .reply-composer.open { display: block; }
+    .reply-composer.open {
+      max-height: 200px;
+      opacity: 1;
+    }
 
     .reply-composer textarea {
       width: 100%;
@@ -1098,23 +1183,79 @@
     /* ── States ─────────────────────────────────────────────────── */
 
     #loading {
-      text-align: center;
-      padding: 60px 20px;
-      color: var(--text-secondary);
-      font-size: 0.9rem;
+      padding: 4px 0;
     }
 
-    .spinner {
-      width: 24px;
-      height: 24px;
-      border: 2px solid var(--border);
-      border-top-color: var(--accent);
+    /* ── Skeleton loading ───────────────────────────────────────── */
+
+    @keyframes shimmer {
+      0% { background-position: -400px 0; }
+      100% { background-position: 400px 0; }
+    }
+
+    .skeleton-note {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 8px;
+    }
+
+    .skeleton-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .skeleton-avatar {
+      width: 40px;
+      height: 40px;
       border-radius: 50%;
-      margin: 0 auto 16px;
-      animation: spin 0.8s linear infinite;
+      background: linear-gradient(90deg, var(--border) 25%, var(--bg-card-hover) 50%, var(--border) 75%);
+      background-size: 800px 100%;
+      animation: shimmer 1.5s infinite linear;
     }
 
-    @keyframes spin { to { transform: rotate(360deg); } }
+    .skeleton-lines {
+      flex: 1;
+    }
+
+    .skeleton-line {
+      height: 10px;
+      border-radius: 5px;
+      background: linear-gradient(90deg, var(--border) 25%, var(--bg-card-hover) 50%, var(--border) 75%);
+      background-size: 800px 100%;
+      animation: shimmer 1.5s infinite linear;
+      margin-bottom: 8px;
+    }
+
+    .skeleton-line:last-child { margin-bottom: 0; }
+    .skeleton-line.short { width: 40%; }
+    .skeleton-line.medium { width: 70%; }
+
+    .skeleton-body {
+      margin-top: 4px;
+    }
+
+    .skeleton-body .skeleton-line { height: 12px; margin-bottom: 10px; }
+    .skeleton-body .skeleton-line:nth-child(1) { width: 100%; animation-delay: 0.1s; }
+    .skeleton-body .skeleton-line:nth-child(2) { width: 90%; animation-delay: 0.2s; }
+    .skeleton-body .skeleton-line:nth-child(3) { width: 60%; animation-delay: 0.3s; }
+
+    .feed-loading-bar {
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      animation: feedLoadSlide 1.2s ease-in-out infinite;
+      margin-bottom: 8px;
+      border-radius: 1px;
+    }
+
+    @keyframes feedLoadSlide {
+      0% { opacity: 0.3; transform: scaleX(0.3); transform-origin: center; }
+      50% { opacity: 1; transform: scaleX(1); transform-origin: center; }
+      100% { opacity: 0.3; transform: scaleX(0.3); transform-origin: center; }
+    }
 
     #empty-state {
       text-align: center;
@@ -1136,16 +1277,21 @@
       transform: translateX(-50%) translateY(80px);
       background: var(--bg-card);
       border: 1px solid var(--border);
+      border-left: 3px solid var(--border);
       color: var(--text-primary);
       padding: 10px 20px;
       border-radius: 8px;
       font-size: 0.82rem;
       z-index: 600;
-      transition: transform 0.3s ease;
+      transition: transform var(--transition-slow);
       pointer-events: none;
+      backdrop-filter: blur(12px);
     }
 
     .toast.visible { transform: translateX(-50%) translateY(0); }
+    .toast.success { border-left-color: var(--green); }
+    .toast.error { border-left-color: var(--red); }
+    .toast.info { border-left-color: var(--blue); }
 
     /* ── Profile modal ─────────────────────────────────────────── */
 
@@ -1185,7 +1331,7 @@
     }
 
     .profile-banner {
-      height: 80px;
+      height: 100px;
       border-radius: 16px 16px 0 0;
       position: relative;
     }
@@ -1222,8 +1368,9 @@
       position: absolute;
       top: 10px;
       right: 14px;
-      background: rgba(0,0,0,0.5);
-      border: none;
+      background: rgba(0,0,0,0.3);
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.15);
       color: #fff;
       width: 28px;
       height: 28px;
@@ -1233,6 +1380,11 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      transition: background var(--transition-fast);
+    }
+
+    .profile-close:hover {
+      background: rgba(0,0,0,0.5);
     }
 
     .profile-body {
@@ -1305,6 +1457,7 @@
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 14px;
+      box-shadow: inset 0 1px 3px rgba(0,0,0,0.06);
     }
 
     .trust-details h3 {
@@ -1448,7 +1601,7 @@
       width: 56px;
       height: 56px;
       border-radius: 50%;
-      background: var(--accent-dim);
+      background: linear-gradient(135deg, var(--accent), var(--accent-dim));
       color: #fff;
       border: none;
       cursor: pointer;
@@ -1457,12 +1610,23 @@
       justify-content: center;
       box-shadow: 0 4px 16px rgba(124,111,191,0.4);
       z-index: 200;
-      transition: transform 0.15s, box-shadow 0.15s;
+      transition: transform var(--transition-base), box-shadow var(--transition-base);
+      animation: fabGlow 3s ease-in-out infinite;
+    }
+
+    @keyframes fabGlow {
+      0%, 100% { box-shadow: 0 4px 16px rgba(124,111,191,0.4); }
+      50% { box-shadow: 0 4px 24px rgba(124,111,191,0.6); }
     }
 
     .fab:hover {
       transform: scale(1.08);
       box-shadow: 0 6px 20px rgba(124,111,191,0.5);
+      animation: none;
+    }
+
+    .fab:active {
+      transform: scale(0.95);
     }
 
     .fab svg {
@@ -1724,16 +1888,25 @@
     /* ── Read-only mode ────────────────────────────────────────── */
 
     body.readonly .fab,
-    body.readonly .note-actions,
-    body.readonly .reply-composer { display: none; }
+    body.readonly .note-actions { display: none; }
+    body.readonly .reply-composer { max-height: 0 !important; opacity: 0 !important; }
 
     /* ── Compact mode ──────────────────────────────────────────── */
 
     body.compact .note { padding: 10px; margin-bottom: 4px; }
     body.compact .avatar { width: 30px; height: 30px; font-size: 0.6rem; }
     body.compact .note-content { font-size: 0.85rem; line-height: 1.4; }
+    body.compact .note-content .note-image { margin: 6px -10px; max-width: calc(100% + 20px); }
+    body.compact .note-content .note-image:last-child { margin-bottom: -10px; }
     body.compact .note-actions { margin-top: 6px; padding-top: 6px; }
     body.compact .note-footer { display: none; }
+
+    /* ── Scrollbar ─────────────────────────────────────────────── */
+
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
 
     /* ── Responsive ────────────────────────────────────────────── */
 
@@ -1800,6 +1973,8 @@
 
       #feed { padding: 8px 10px 100px; }
       .note { padding: 14px; }
+      .note-content .note-image { margin: 8px -14px; max-width: calc(100% + 28px); }
+      .note-content .note-image:last-child { margin-bottom: -14px; }
       .avatar { width: 36px; height: 36px; }
 
       .note-action {
@@ -1825,7 +2000,13 @@
     }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preload" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" as="style" onload="this.onload=null;this.rel='stylesheet'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"></noscript>
+  <link rel="modulepreload" href="https://esm.sh/nostr-tools@2.10.0">
+  <link rel="modulepreload" href="https://esm.sh/nostr-tools@2.10.0/nip46">
+  <link rel="modulepreload" href="https://esm.sh/nostr-tools@2.10.0/pure">
+  <link rel="modulepreload" href="https://esm.sh/qrcode-generator@1.4.4">
 </head>
 <body>
   <header>
@@ -1928,8 +2109,18 @@
 
   <div id="feed">
     <div id="loading">
-      <div class="spinner"></div>
-      Connecting to relay...
+      <div class="skeleton-note">
+        <div class="skeleton-header"><div class="skeleton-avatar"></div><div class="skeleton-lines"><div class="skeleton-line medium"></div><div class="skeleton-line short"></div></div></div>
+        <div class="skeleton-body"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      </div>
+      <div class="skeleton-note">
+        <div class="skeleton-header"><div class="skeleton-avatar"></div><div class="skeleton-lines"><div class="skeleton-line short"></div><div class="skeleton-line medium"></div></div></div>
+        <div class="skeleton-body"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      </div>
+      <div class="skeleton-note">
+        <div class="skeleton-header"><div class="skeleton-avatar"></div><div class="skeleton-lines"><div class="skeleton-line medium"></div><div class="skeleton-line short"></div></div></div>
+        <div class="skeleton-body"><div class="skeleton-line"></div><div class="skeleton-line"></div><div class="skeleton-line"></div></div>
+      </div>
     </div>
     <div id="empty-state">
       <div class="empty-icon">~</div>
@@ -2010,6 +2201,10 @@
           <div class="trust-row">
             <span class="trust-label">Hop Distance</span>
             <span class="trust-val" id="pm-distance">--</span>
+          </div>
+          <div class="trust-row">
+            <span class="trust-label">Trust Paths</span>
+            <span class="trust-val" id="pm-paths">--</span>
           </div>
           <div class="trust-row">
             <span class="trust-label">Combined Score</span>

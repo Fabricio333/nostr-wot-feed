@@ -34,7 +34,7 @@ const Settings = {
     showTrustFooter: true,
     showDebug: false,
     compactMode: false,
-    relays: ['wss://relay.damus.io'],
+    relays: ['wss://relay.damus.io', 'wss://relay.nostr.band', 'wss://nos.lol'],
     mutedPubkeys: [],
     bookmarks: {},
     theme: 'dark',
@@ -192,7 +192,7 @@ const Auth = {
         if (saved.method === 'nip07') {
           this._showStatus('Reconnecting to extension...');
           this._modal.classList.add('open');
-          const hasExt = await this._detectExtension();
+          const hasExt = await this._detectExtension(true);
           if (hasExt) {
             await Signer.initNip07();
             this._hideModal();
@@ -418,10 +418,12 @@ const Auth = {
     }
   },
 
-  async _detectExtension() {
-    const delays = [0, 500, 1500];
+  async _detectExtension(quick = false) {
+    if (window.nostr) return true;
+    // Quick mode for saved sessions — don't wait long
+    const delays = quick ? [100, 400] : [200, 500, 1000];
     for (const d of delays) {
-      if (d > 0) await new Promise(r => setTimeout(r, d));
+      await new Promise(r => setTimeout(r, d));
       if (window.nostr) return true;
     }
     return false;
@@ -499,11 +501,13 @@ const Debug = {
 
 // ─── Toast ──────────────────────────────────────────────────────────────────────
 
-function showToast(msg) {
+function showToast(msg, type) {
   const el = document.getElementById('toast');
   el.textContent = msg;
+  el.classList.remove('success', 'error', 'info');
+  if (type) el.classList.add(type);
   el.classList.add('visible');
-  setTimeout(() => el.classList.remove('visible'), 2500);
+  setTimeout(() => el.classList.remove('visible', 'success', 'error', 'info'), 2500);
 }
 
 // ─── Theme Manager ──────────────────────────────────────────────────────────────
@@ -551,11 +555,29 @@ const DropdownManager = {
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') this.close();
     });
+    // Close on scroll since dropdown is position:fixed
+    window.addEventListener('scroll', () => {
+      if (this.activeDropdown) this.close();
+    }, { passive: true });
   },
 
-  open(dropdownEl) {
+  open(dropdownEl, anchorEl) {
     if (this.activeDropdown && this.activeDropdown !== dropdownEl) {
       this.activeDropdown.classList.remove('open');
+    }
+    // Position the fixed dropdown relative to the anchor button
+    if (anchorEl) {
+      const rect = anchorEl.getBoundingClientRect();
+      dropdownEl.style.top = (rect.bottom + 4) + 'px';
+      dropdownEl.style.right = (window.innerWidth - rect.right) + 'px';
+      dropdownEl.style.left = 'auto';
+      // If dropdown would go off-screen bottom, position above
+      requestAnimationFrame(() => {
+        const ddRect = dropdownEl.getBoundingClientRect();
+        if (ddRect.bottom > window.innerHeight - 10) {
+          dropdownEl.style.top = Math.max(10, rect.top - ddRect.height - 4) + 'px';
+        }
+      });
     }
     dropdownEl.classList.add('open');
     this.activeDropdown = dropdownEl;
@@ -568,11 +590,11 @@ const DropdownManager = {
     }
   },
 
-  toggle(dropdownEl) {
+  toggle(dropdownEl, anchorEl) {
     if (dropdownEl.classList.contains('open')) {
       this.close();
     } else {
-      this.open(dropdownEl);
+      this.open(dropdownEl, anchorEl);
     }
   },
 };
@@ -699,7 +721,7 @@ const Profiles = {
     if (this.cache.has(pubkey) || this.pendingPubkeys.has(pubkey)) return;
     this.pendingPubkeys.add(pubkey);
     if (!this.fetchTimer) {
-      this.fetchTimer = setTimeout(() => this.fetchBatch(), 800);
+      this.fetchTimer = setTimeout(() => this.fetchBatch(), 250);
     }
   },
 
@@ -771,7 +793,7 @@ const ParentNotes = {
     if (Feed.notesById?.has(eventId)) return;
     this.pendingIds.add(eventId);
     if (!this.fetchTimer) {
-      this.fetchTimer = setTimeout(() => this.fetchBatch(), 1200);
+      this.fetchTimer = setTimeout(() => this.fetchBatch(), 400);
     }
   },
 
@@ -827,8 +849,6 @@ const WoT = {
   },
 
   async init() {
-    await new Promise(r => setTimeout(r, 300));
-
     this.hasExtension = !!(window.nostr?.wot);
     Debug.log(`window.nostr exists: ${!!window.nostr}`, 'info');
     Debug.log(`window.nostr.wot exists: ${this.hasExtension}`, 'info');
@@ -869,7 +889,7 @@ const WoT = {
     if (this.cache.has(pubkey)) return this.cache.get(pubkey);
     // If not cached, run a mini batch of 1
     await this.scoreBatch([pubkey]);
-    return this.cache.get(pubkey) || { score: 0, distance: Infinity, trusted: false };
+    return this.cache.get(pubkey) || { score: 0, distance: Infinity, trusted: false, paths: 0 };
   },
 
   // ── Main batch scorer — picks the best available strategy ──
@@ -886,7 +906,7 @@ const WoT = {
       await this._scoreBatchOracle(uncached);
     } else {
       for (const pk of uncached) {
-        this.cache.set(pk, { score: 0, distance: Infinity, trusted: false });
+        this.cache.set(pk, { score: 0, distance: Infinity, trusted: false, paths: 0 });
       }
     }
 
@@ -911,7 +931,7 @@ const WoT = {
         // Cache misses as untrusted immediately
         for (const pk of pubkeys) {
           if (!inWotSet.has(pk)) {
-            this.cache.set(pk, { score: 0, distance: Infinity, trusted: false });
+            this.cache.set(pk, { score: 0, distance: Infinity, trusted: false, paths: 0 });
           }
         }
 
@@ -933,7 +953,7 @@ const WoT = {
       const pk = toDetail[i];
       if (this.cache.has(pk)) continue;
 
-      const result = { score: 0, distance: Infinity, trusted: false };
+      const result = { score: 0, distance: Infinity, trusted: false, paths: 0 };
 
       try {
         // Prefer getDetails (1 call → score + distance + everything)
@@ -942,6 +962,7 @@ const WoT = {
           if (details) {
             result.distance = details.distance ?? details.hops ?? Infinity;
             result.score = details.score ?? details.trustScore ?? 0;
+            result.paths = details.paths ?? details.pathCount ?? details.numPaths ?? 0;
             if (result.distance < Infinity && result.distance > 0) result.trusted = true;
             if (result.score > 0) result.trusted = true;
             // Fill score from distance if extension only returned distance
@@ -1019,9 +1040,10 @@ const WoT = {
                 score: this._scoreFromDistance(d),
                 distance: d,
                 trusted: true,
+                paths: 0,
               });
             } else {
-              this.cache.set(pk, { score: 0, distance: Infinity, trusted: false });
+              this.cache.set(pk, { score: 0, distance: Infinity, trusted: false, paths: 0 });
             }
           }
         }
@@ -1039,12 +1061,12 @@ const WoT = {
               const d = await r.json();
               const dist = typeof d === 'number' ? d : (d?.distance ?? null);
               if (dist !== null && dist > 0) {
-                this.cache.set(pk, { score: this._scoreFromDistance(dist), distance: dist, trusted: true });
+                this.cache.set(pk, { score: this._scoreFromDistance(dist), distance: dist, trusted: true, paths: 0 });
                 continue;
               }
             }
           } catch (_) { /* ignore individual failures */ }
-          this.cache.set(pk, { score: 0, distance: Infinity, trusted: false });
+          this.cache.set(pk, { score: 0, distance: Infinity, trusted: false, paths: 0 });
         }
       }
     }
@@ -1103,10 +1125,10 @@ const Mute = {
       const signed = await Signer.signEvent(event);
       await Relay.publishEvent(signed);
       Debug.log(`Mute: published kind 10000 with ${tags.length} entries`, 'success');
-      showToast('Mute list synced to relay');
+      showToast('Mute list synced to relay', 'success');
     } catch (e) {
       Debug.log(`Mute: publish failed: ${e.message}`, 'error');
-      showToast('Mute list publish failed');
+      showToast('Mute list publish failed', 'error');
     }
   },
 
@@ -1206,6 +1228,11 @@ const Relay = {
         onclose: (reason) => {
           Debug.log(`Sub closed: ${JSON.stringify(reason)}`, 'error');
           if (this.onStatus) this.onStatus('disconnected');
+          // Auto-reconnect after 3 seconds
+          setTimeout(() => {
+            Debug.log('Auto-reconnecting to relays...', 'info');
+            this.reconnect();
+          }, 3000);
         },
       }
     );
@@ -1263,12 +1290,12 @@ const Actions = {
       const signed = await Signer.signEvent(event);
       await Relay.publishEvent(signed);
       this.liked.add(noteId);
-      showToast('Liked!');
+      showToast('Liked!', 'success');
       const btn = document.querySelector(`.note[data-id="${noteId}"] .action-like`);
       if (btn) btn.classList.add('liked');
     } catch (e) {
       Debug.log(`Like failed: ${e.message}`, 'error');
-      showToast('Like failed');
+      showToast('Like failed', 'error');
     }
   },
 
@@ -1287,12 +1314,12 @@ const Actions = {
       const signed = await Signer.signEvent(event);
       await Relay.publishEvent(signed);
       this.reposted.add(noteId);
-      showToast('Reposted!');
+      showToast('Reposted!', 'success');
       const btn = document.querySelector(`.note[data-id="${noteId}"] .action-repost`);
       if (btn) btn.classList.add('reposted');
     } catch (e) {
       Debug.log(`Repost failed: ${e.message}`, 'error');
-      showToast('Repost failed');
+      showToast('Repost failed', 'error');
     }
   },
 
@@ -1310,10 +1337,10 @@ const Actions = {
       };
       const signed = await Signer.signEvent(event);
       await Relay.publishEvent(signed);
-      showToast('Reply sent!');
+      showToast('Reply sent!', 'success');
     } catch (e) {
       Debug.log(`Reply failed: ${e.message}`, 'error');
-      showToast('Reply failed');
+      showToast('Reply failed', 'error');
     }
   },
 
@@ -1365,7 +1392,7 @@ const ProfileModal = {
   open(pubkey) {
     this.currentPubkey = pubkey;
     const profile = Profiles.get(pubkey);
-    const trust = WoT.cache.get(pubkey) || { score: 0, distance: Infinity, trusted: false };
+    const trust = WoT.cache.get(pubkey) || { score: 0, distance: Infinity, trusted: false, paths: 0 };
     const avatarColor = pubkeyColor(pubkey);
     const initials = (profile?.displayName || profile?.name || pubkey.slice(0, 2)).slice(0, 2).toUpperCase();
 
@@ -1391,6 +1418,7 @@ const ProfileModal = {
 
     document.getElementById('pm-trust-score').textContent = trust.score.toFixed(3);
     document.getElementById('pm-distance').textContent = trust.distance < Infinity ? `${trust.distance} hops` : 'Unknown';
+    document.getElementById('pm-paths').textContent = trust.paths > 0 ? trust.paths : '--';
 
     const noteForAuthor = Feed.notes.find(n => n.pubkey === pubkey);
     document.getElementById('pm-combined').textContent = noteForAuthor
@@ -1478,10 +1506,10 @@ const Composer = {
       Feed.addEvent(signed);
 
       this.close();
-      showToast('Note published!');
+      showToast('Note published!', 'success');
     } catch (e) {
       Debug.log(`Publish failed: ${e.message}`, 'error');
-      showToast('Publish failed');
+      showToast('Publish failed', 'error');
       this.publishBtn.disabled = false;
     }
   },
@@ -1624,15 +1652,15 @@ const SettingsDrawer = {
       const input = document.getElementById('relay-input');
       const url = input.value.trim();
       if (!url.startsWith('wss://') && !url.startsWith('ws://')) {
-        showToast('Relay URL must start with wss://');
+        showToast('Relay URL must start with wss://', 'error');
         return;
       }
       if (Relay.addRelay(url)) {
         input.value = '';
         this.updateRelayList();
-        showToast('Relay added');
+        showToast('Relay added', 'success');
       } else {
-        showToast('Relay already exists');
+        showToast('Relay already exists', 'info');
       }
     });
 
@@ -1704,7 +1732,7 @@ const SettingsDrawer = {
 
 // ─── Feed Manager ───────────────────────────────────────────────────────────────
 
-const RENDER_THROTTLE_MS = 600;
+const RENDER_THROTTLE_MS = 300;
 const PAGE_SIZE = 20;
 
 const Feed = {
@@ -1738,6 +1766,8 @@ const Feed = {
   _eoseReceived: false,
   _initialRenderDone: false,
   _pendingCount: 0,
+  _progressiveTimer: null,
+  _lastProgressiveCount: 0,
 
   init() {
     this.feedEl = document.getElementById('feed');
@@ -1801,6 +1831,48 @@ const Feed = {
     if (this.newNotesBanner) this.newNotesBanner.style.display = 'none';
   },
 
+  _startProgressiveRendering() {
+    this._lastProgressiveCount = this.notes.length;
+    this._displayLimit = PAGE_SIZE;
+    this.scheduleRender(true);
+
+    if (!this._progressiveTimer) {
+      this._progressiveTimer = setInterval(() => {
+        if (this._initialRenderDone) {
+          this._clearProgressiveTimer();
+          return;
+        }
+        if (this.notes.length > this._lastProgressiveCount + 3) {
+          this._lastProgressiveCount = this.notes.length;
+          this.scheduleRender(true);
+        }
+      }, 800);
+    }
+  },
+
+  _clearProgressiveTimer() {
+    if (this._progressiveTimer) {
+      clearInterval(this._progressiveTimer);
+      this._progressiveTimer = null;
+    }
+  },
+
+  _showLoadingBar() {
+    if (this.feedEl.querySelector('.feed-loading-bar')) return;
+    const bar = document.createElement('div');
+    bar.className = 'feed-loading-bar';
+    this.feedEl.insertBefore(bar, this.feedEl.firstChild);
+  },
+
+  _removeLoadingBar() {
+    const bar = this.feedEl?.querySelector('.feed-loading-bar');
+    if (bar) {
+      bar.style.transition = 'opacity 0.3s ease';
+      bar.style.opacity = '0';
+      setTimeout(() => bar.remove(), 300);
+    }
+  },
+
   async addEvent(event) {
     this.totalReceived++;
 
@@ -1848,6 +1920,7 @@ const Feed = {
           trustScore: trust.score,
           distance: trust.distance,
           trusted: trust.trusted,
+          paths: trust.paths || 0,
           combinedScore,
           replyTo,
         };
@@ -1870,19 +1943,24 @@ const Feed = {
 
     this.processing = false;
 
-    // First batch after EOSE → do initial render
-    if (this._eoseReceived && !this._initialRenderDone) {
-      this._initialRenderDone = true;
-      this._displayLimit = PAGE_SIZE;
-      this.scheduleRender(true);
-    } else if (this._initialRenderDone) {
-      // After initial render: buffer silently, show banner
+    if (this._initialRenderDone) {
+      // Post-EOSE: buffer silently, show banner
       this._pendingCount += newInBatch;
       if (this._pendingCount > 0) {
         this._showNewNotesBanner(this._pendingCount);
       }
+    } else if (this._eoseReceived) {
+      // EOSE received: final initial render
+      this._initialRenderDone = true;
+      this._clearProgressiveTimer();
+      this._removeLoadingBar();
+      this._displayLimit = PAGE_SIZE;
+      this.scheduleRender(true);
+    } else if (this.notes.length >= 3 && this.notes.length > this._lastProgressiveCount) {
+      // Pre-EOSE with enough data: progressive render
+      this._showLoadingBar();
+      this._startProgressiveRendering();
     }
-    // Before EOSE: don't render (loading spinner stays visible)
   },
 
   scheduleRender(forceRebuild = false) {
@@ -1906,8 +1984,10 @@ const Feed = {
   executeRender() {
     this.lastRenderTime = Date.now();
 
-    if (this.loadingEl && this.notes.length > 0) {
-      this.loadingEl.style.display = 'none';
+    if (this.loadingEl && this.notes.length > 0 && this.loadingEl.style.display !== 'none') {
+      this.loadingEl.style.transition = 'opacity 0.3s ease';
+      this.loadingEl.style.opacity = '0';
+      setTimeout(() => { this.loadingEl.style.display = 'none'; }, 300);
     }
 
     // Filter
@@ -2048,6 +2128,11 @@ const Feed = {
       ? `<span class="trust-pct" style="color:${trustColor}">${trustPct}%</span>`
       : '';
 
+    // Paths count badge
+    const pathsHtml = note.trusted && note.paths > 0
+      ? `<span class="trust-paths" title="${note.paths} trust path${note.paths !== 1 ? 's' : ''}">${note.paths}p</span>`
+      : '';
+
     const npubLine = displayName
       ? `<span class="note-npub">${npub}</span>`
       : '';
@@ -2057,6 +2142,7 @@ const Feed = {
         <span>trust ${note.trustScore.toFixed(2)}</span>
         <span>score ${note.combinedScore.toFixed(2)}</span>
         ${note.distance < Infinity ? `<span>${note.distance}-hop</span>` : ''}
+        ${note.paths > 0 ? `<span>${note.paths} path${note.paths !== 1 ? 's' : ''}</span>` : ''}
       </div>` : '';
 
     // Reply context bar
@@ -2086,6 +2172,7 @@ const Feed = {
             ${nameHtml}
             ${trustPctHtml}
             <span class="trust-badge ${hopClass}">${hopLabel}</span>
+            ${pathsHtml}
           </div>
           ${npubLine}
         </div>
@@ -2151,7 +2238,7 @@ const Feed = {
     const dropdown = el.querySelector('.note-dropdown');
     moreBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      DropdownManager.toggle(dropdown);
+      DropdownManager.toggle(dropdown, moreBtn);
     });
 
     // Dropdown: copy actions
@@ -2546,11 +2633,11 @@ async function main() {
     // Toggle read-only mode
     document.body.classList.toggle('readonly', Signer.isReadOnly());
 
-    const wotStatus = await WoT.init();
-
-    // Load mute list from relays (needs WoT.myPubkey)
-    await Mute.loadFromRelay();
-    SettingsDrawer.updateMutedList();
+    // Run WoT init and mute list load in parallel for faster startup
+    const [wotStatus] = await Promise.all([
+      WoT.init(),
+      Mute.loadFromRelay().then(() => SettingsDrawer.updateMutedList()),
+    ]);
 
     // WoT status (desktop + mobile)
     const wotEls = [
@@ -2580,6 +2667,8 @@ async function main() {
         // On EOSE, trigger initial render
         if (status === 'eose') {
           Feed._eoseReceived = true;
+          Feed._clearProgressiveTimer();
+          Feed._removeLoadingBar();
           if (!Feed.processing && !Feed._initialRenderDone) {
             Feed._initialRenderDone = true;
             Feed._displayLimit = PAGE_SIZE;
