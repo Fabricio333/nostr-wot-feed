@@ -48,9 +48,23 @@ export function Feed() {
   const { pubkey: myPubkey } = useAuthStore();
   const { hasExtension: wotExtDetected } = useWoTStore();
   const [parentTick, setParentTick] = useState(0);
+  const [relayTick, setRelayTick] = useState(0);
   const initRef = React.useRef(false);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const throttleRef = useRef(false);
+
+  // Track per-relay connection changes for the status display
+  useEffect(() => {
+    const prev = Relay.onRelayStatusChange;
+    Relay.onRelayStatusChange = () => {
+      setRelayTick((t) => t + 1);
+      prev?.();
+    };
+    return () => { Relay.onRelayStatusChange = prev; };
+  }, []);
+
+  const connectedRelays = Relay.getConnectedCount();
+  const totalRelays = Relay.getUrls().length;
 
   // If no pubkey (read-only), default to global feed
   useEffect(() => {
@@ -200,7 +214,7 @@ export function Feed() {
             <span>{filteredNotes.length} notes</span>
             <span className="text-zinc-700">|</span>
             <span>{authors.size} authors</span>
-            <StatusPill status={relayStatus} />
+            <StatusPill status={relayStatus} connected={connectedRelays} total={totalRelays} />
           </div>
         </div>
 
@@ -359,14 +373,16 @@ function FeedTabs({ mode, onChange }: { mode: FeedMode; onChange: (m: FeedMode) 
   );
 }
 
-function StatusPill({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    connecting: 'bg-yellow-500',
-    connected: 'bg-green-500',
-    eose: 'bg-green-500',
-    disconnected: 'bg-red-500',
-  };
+function StatusPill({ status, connected, total }: { status: string; connected: number; total: number }) {
+  const dotColor =
+    connected === 0 ? 'bg-red-500' :
+    connected < total ? 'bg-yellow-500' :
+    'bg-green-500';
+
   return (
-    <span className={cn('w-2 h-2 rounded-full inline-block', colors[status] || 'bg-zinc-500')} />
+    <span className="flex items-center gap-1.5">
+      <span className={cn('w-2 h-2 rounded-full inline-block', dotColor)} />
+      <span>{connected}/{total}</span>
+    </span>
   );
 }

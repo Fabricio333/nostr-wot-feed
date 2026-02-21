@@ -15,8 +15,34 @@ class RelayManager {
   private _onEvent: ((event: NostrEvent) => void) | null = null;
   private _onStatus: ((status: RelayStatus) => void) | null = null;
 
+  // Per-relay connection tracking
+  relayStatuses = new Map<string, boolean>();
+  onRelayStatusChange: (() => void) | null = null;
+
   getUrls(): string[] {
     return getSettings().relays;
+  }
+
+  getConnectedCount(): number {
+    let count = 0;
+    for (const v of this.relayStatuses.values()) {
+      if (v) count++;
+    }
+    return count;
+  }
+
+  /** Snapshot per-relay status from the pool */
+  refreshStatuses(): void {
+    if (!this.pool) return;
+    try {
+      const statuses = (this.pool as any).listConnectionStatus?.();
+      if (statuses instanceof Map) {
+        this.relayStatuses = new Map(statuses);
+        this.onRelayStatusChange?.();
+      }
+    } catch {
+      // listConnectionStatus not available in this version
+    }
   }
 
   init(
@@ -34,6 +60,16 @@ class RelayManager {
 
     if (!this.pool) {
       this.pool = new SimplePool();
+      // Wire per-relay connection callbacks
+      const p = this.pool as any;
+      p.onRelayConnectionSuccess = (url: string) => {
+        this.relayStatuses.set(url, true);
+        this.onRelayStatusChange?.();
+      };
+      p.onRelayConnectionFailure = (url: string) => {
+        this.relayStatuses.set(url, false);
+        this.onRelayStatusChange?.();
+      };
     }
     this.connect();
   }
@@ -129,6 +165,9 @@ class RelayManager {
       this._sub.close();
       this._sub = null;
     }
+    // Reset per-relay statuses — they'll be re-populated via callbacks
+    this.relayStatuses.clear();
+    this.onRelayStatusChange?.();
     this.connect();
   }
 

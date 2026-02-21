@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useWoTStore } from '@/stores/wotStore';
 import { useProfileStore } from '@/stores/profileStore';
 import { Relay } from '@/services/relay';
+import { cn } from '@/lib/utils';
 import { Mute } from '@/services/mute';
 import { Profiles } from '@/services/profiles';
 import { Signer } from '@/services/signer';
@@ -20,6 +21,19 @@ export function Settings() {
   const { hasExtension } = useWoTStore();
   const { updateTick } = useProfileStore();
   const [newRelay, setNewRelay] = useState('');
+  const [relayTick, setRelayTick] = useState(0);
+
+  // Track per-relay connection changes
+  useEffect(() => {
+    const prev = Relay.onRelayStatusChange;
+    Relay.onRelayStatusChange = () => {
+      setRelayTick((t) => t + 1);
+      prev?.();
+    };
+    // Also refresh statuses from pool snapshot on mount
+    Relay.refreshStatuses();
+    return () => { Relay.onRelayStatusChange = prev; };
+  }, []);
 
   let npubDisplay = '';
   if (pubkey) {
@@ -160,20 +174,31 @@ export function Settings() {
         </Section>
 
         {/* Relays */}
-        <Section title="Relays">
+        <Section title={`Relays (${Relay.getConnectedCount()}/${settings.relays.length} connected)`}>
           <div className="space-y-2">
-            {settings.relays.map((url) => (
-              <div key={url} className="flex items-center justify-between bg-zinc-800 rounded-lg px-3 py-2">
-                <span className="text-sm text-zinc-300 truncate flex-1 mr-2 font-mono">{url}</span>
-                <button
-                  onClick={() => handleRemoveRelay(url)}
-                  className="text-zinc-500 hover:text-red-400 transition-colors p-1"
-                  disabled={settings.relays.length <= 1}
-                >
-                  <Trash2 size={16} />
-                </button>
-              </div>
-            ))}
+            {settings.relays.map((url) => {
+              const isConnected = Relay.relayStatuses.get(url);
+              const dotColor =
+                isConnected === true ? 'bg-green-500' :
+                isConnected === false ? 'bg-red-500' :
+                'bg-zinc-600'; // unknown / connecting
+
+              return (
+                <div key={url} className="flex items-center justify-between bg-zinc-800 rounded-lg px-3 py-2">
+                  <div className="flex items-center gap-2 flex-1 min-w-0 mr-2">
+                    <span className={cn('w-2.5 h-2.5 rounded-full flex-shrink-0', dotColor)} title={isConnected ? 'Connected' : isConnected === false ? 'Disconnected' : 'Connecting...'} />
+                    <span className="text-sm text-zinc-300 truncate font-mono">{url}</span>
+                  </div>
+                  <button
+                    onClick={() => handleRemoveRelay(url)}
+                    className="text-zinc-500 hover:text-red-400 transition-colors p-1"
+                    disabled={settings.relays.length <= 1}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
           <div className="flex gap-2 mt-3">
             <input
