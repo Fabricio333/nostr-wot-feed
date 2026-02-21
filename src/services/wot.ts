@@ -149,62 +149,195 @@ class WoTService {
   }
 
   private async _scoreBatchExtension(pubkeys: string[]): Promise<void> {
-    const w = window as any;
-    const wot = w.nostr.wot;
-    let toDetail = pubkeys;
+    const wot = (window as any).nostr.wot;
 
+    // Strategy 1: Use batch APIs (fast, ideal for local node)
+    if (this._methods.getDistanceBatch || this._methods.getTrustScoreBatch) {
+      try {
+        const scored = await this._scoreBatchAPIs(pubkeys, wot);
+        if (scored) return;
+      } catch {
+        // Fall through to individual scoring
+      }
+    }
+
+    // Strategy 2: Use getDetails() in parallel (no artificial delays for local node)
+    if (this._methods.getDetails) {
+      await this._scoreWithDetails(pubkeys, wot);
+      return;
+    }
+
+    // Strategy 3: Use individual getDistance or getTrustScore
+    await this._scoreIndividual(pubkeys, wot);
+  }
+
+  /**
+   * Use batch APIs to score all pubkeys at once.
+   * Returns true if successful.
+   */
+  private async _scoreBatchAPIs(pubkeys: string[], wot: any): Promise<boolean> {
+    const promises: Promise<any>[] = [];
+
+    if (this._methods.getDistanceBatch) {
+      promises.push(wot.getDistanceBatch(pubkeys).catch(() => null));
+    } else {
+      promises.push(Promise.resolve(null));
+    }
+
+    if (this._methods.getTrustScoreBatch) {
+      promises.push(wot.getTrustScoreBatch(pubkeys).catch(() => null));
+    } else {
+      promises.push(Promise.resolve(null));
+    }
+
+    const [distancesRaw, scoresRaw] = await Promise.all(promises);
+
+    if (!distancesRaw && !scoresRaw) return false;
+
+    // Normalize results to { pubkey: value } maps
+    const distances = this._normalizeResult(distancesRaw, pubkeys);
+    const scores = this._normalizeResult(scoresRaw, pubkeys);
+
+    // Track which pubkeys still need paths data
+    const needsPaths: string[] = [];
+
+    for (const pk of pubkeys) {
+      if (this.cache.has(pk)) continue;
+
+      const d = distances.get(pk);
+      const s = scores.get(pk);
+      const distance = (typeof d === 'number' && d > 0) ? d : Infinity;
+      const score = (typeof s === 'number' && s > 0) ? s : (distance < Infinity ? this._scoreFromDistance(distance) : 0);
+      const trusted = distance < Infinity || score > 0;
+
+      this.cache.set(pk, { score, distance, trusted, paths: 0 });
+
+      if (trusted) needsPaths.push(pk);
+    }
+
+    // Background: enrich trusted pubkeys with path count via getDetails
+    if (this._methods.getDetails && needsPaths.length > 0) {
+      this._enrichWithDetails(needsPaths, wot);
+    }
+
+    return true;
+  }
+
+  /**
+   * Normalize batch API results (could be Map, object, or array) to a Map.
+   */
+  private _normalizeResult(raw: any, pubkeys: string[]): Map<string, number | null> {
+    const map = new Map<string, number | null>();
+    if (!raw) return map;
+
+    if (raw instanceof Map) {
+      return raw;
+    }
+    if (Array.isArray(raw)) {
+      for (let i = 0; i < pubkeys.length && i < raw.length; i++) {
+        map.set(pubkeys[i], raw[i]);
+      }
+      return map;
+    }
+    if (typeof raw === 'object') {
+      for (const pk of pubkeys) {
+        if (pk in raw) map.set(pk, raw[pk]);
+      }
+    }
+    return map;
+  }
+
+  /**
+   * Score pubkeys using getDetails() in parallel (no delays for local node).
+   */
+  private async _scoreWithDetails(pubkeys: string[], wot: any): Promise<void> {
+    // Pre-filter with filterByWoT if available to reduce detail calls
+    let toDetail = pubkeys;
     if (this._methods.filterByWoT) {
       try {
         const maxHops = getSettings().maxHops;
         const inWot = await wot.filterByWoT(pubkeys, maxHops + 2);
         const inWotSet = new Set(Array.isArray(inWot) ? inWot : []);
-
         for (const pk of pubkeys) {
           if (!inWotSet.has(pk)) {
-            this.cache.set(pk, {
-              score: 0,
-              distance: Infinity,
-              trusted: false,
-              paths: 0,
-            });
+            this.cache.set(pk, { score: 0, distance: Infinity, trusted: false, paths: 0 });
           }
         }
-
         toDetail = pubkeys.filter((pk) => inWotSet.has(pk));
       } catch {
-        toDetail = pubkeys;
+        // If filterByWoT fails, score all
       }
     }
 
     if (toDetail.length === 0) return;
 
-    const DELAY_MS = 125;
+    // Run getDetails in parallel batches of 10 to avoid overwhelming the extension
+    const BATCH = 10;
+    for (let i = 0; i < toDetail.length; i += BATCH) {
+      const chunk = toDetail.slice(i, i + BATCH);
+      const results = await Promise.allSettled(
+        chunk.map((pk) => wot.getDetails(pk).then((d: any) => ({ pk, d })))
+      );
 
-    for (let i = 0; i < toDetail.length; i++) {
-      const pk = toDetail[i];
-      if (this.cache.has(pk)) continue;
+      for (const r of results) {
+        if (r.status !== 'fulfilled' || !r.value) continue;
+        const { pk, d: details } = r.value;
+        if (this.cache.has(pk)) continue;
 
-      const result: TrustData = {
-        score: 0,
-        distance: Infinity,
-        trusted: false,
-        paths: 0,
-      };
+        if (details) {
+          const distance = details.distance ?? Infinity;
+          let score = details.score ?? details.trustScore ?? 0;
+          const paths = details.pathsCount ?? details.paths ?? 0;
+          const trusted = (distance < Infinity && distance > 0) || score > 0;
+          if (trusted && score === 0) score = this._scoreFromDistance(distance);
+          this.cache.set(pk, { score, distance, trusted, paths });
+        } else {
+          this.cache.set(pk, { score: 0, distance: Infinity, trusted: false, paths: 0 });
+        }
+      }
+    }
 
+    // Fill any remaining uncached
+    for (const pk of toDetail) {
+      if (!this.cache.has(pk)) {
+        this.cache.set(pk, { score: 0, distance: Infinity, trusted: false, paths: 0 });
+      }
+    }
+  }
+
+  /**
+   * Background enrichment: fetch pathsCount for already-scored pubkeys.
+   */
+  private async _enrichWithDetails(pubkeys: string[], wot: any): Promise<void> {
+    for (const pk of pubkeys) {
       try {
-        if (this._methods.getDetails) {
-          const details = await wot.getDetails(pk);
-          if (details) {
-            result.distance = details.distance ?? Infinity;
-            result.score = details.trustScore ?? details.score ?? 0;
-            result.paths = details.pathsCount ?? details.paths ?? 0;
-            if (result.distance !== null && result.distance < Infinity && result.distance > 0) result.trusted = true;
-            if (result.score > 0) result.trusted = true;
-            if (result.trusted && result.score === 0) {
-              result.score = this._scoreFromDistance(result.distance);
+        const details = await wot.getDetails(pk);
+        if (details) {
+          const existing = this.cache.get(pk);
+          if (existing) {
+            existing.paths = details.pathsCount ?? details.paths ?? existing.paths;
+            if (details.score && details.score > existing.score) {
+              existing.score = details.score;
             }
           }
-        } else if (this._methods.getDistance) {
+        }
+      } catch {
+        // ignore individual failures
+      }
+    }
+  }
+
+  /**
+   * Fallback: score using individual getDistance/getTrustScore calls.
+   */
+  private async _scoreIndividual(pubkeys: string[], wot: any): Promise<void> {
+    for (const pk of pubkeys) {
+      if (this.cache.has(pk)) continue;
+
+      const result: TrustData = { score: 0, distance: Infinity, trusted: false, paths: 0 };
+
+      try {
+        if (this._methods.getDistance) {
           const raw = await wot.getDistance(pk);
           const d = typeof raw === 'number' ? raw : raw?.distance ?? raw?.hops ?? null;
           if (d !== null && d > 0) {
@@ -220,19 +353,11 @@ class WoTService {
             result.trusted = true;
           }
         }
-      } catch (e: any) {
-        if (e.message?.includes('Rate limit')) {
-          await new Promise((r) => setTimeout(r, 2000));
-          i--;
-          continue;
-        }
+      } catch {
+        // ignore
       }
 
       this.cache.set(pk, result);
-
-      if (i < toDetail.length - 1) {
-        await new Promise((r) => setTimeout(r, DELAY_MS));
-      }
     }
   }
 

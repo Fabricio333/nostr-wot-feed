@@ -3,6 +3,10 @@
 
 @import "tw-animate-css";
 
+@utility overscroll-contain-y {
+  overscroll-behavior-y: contain;
+}
+
 @utility no-scrollbar {
   &::-webkit-scrollbar {
     display: none;

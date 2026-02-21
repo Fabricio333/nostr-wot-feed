@@ -7,21 +7,38 @@ import { useWoTStore } from '@/stores/wotStore';
 import { Profiles } from '@/services/profiles';
 import { WoT } from '@/services/wot';
 import { Mute } from '@/services/mute';
+import { Follows } from '@/services/follows';
 import { Relay } from '@/services/relay';
 import { parseContent } from '@/services/content';
 import { truncateNpub, pubkeyColor, timeAgo, trustColor } from '@/utils/helpers';
 import { nip19 } from 'nostr-tools';
 import type { NostrEvent, ParsedContent } from '@/types/nostr';
 import { cn } from '@/lib/utils';
+import { FollowListDialog } from '@/app/components/FollowListDialog';
 
 export function Profile() {
   const { handle } = useParams();
-  const { pubkey: myPubkey } = useAuthStore();
+  const { pubkey: myPubkey, isLoggedIn, isReadOnly } = useAuthStore();
   const { updateTick } = useProfileStore();
   const { cacheTick } = useWoTStore();
   const [activeTab, setActiveTab] = useState<'posts' | 'replies' | 'media'>('posts');
   const [userNotes, setUserNotes] = useState<NostrEvent[]>([]);
   const [loadingNotes, setLoadingNotes] = useState(false);
+
+  // Follow state
+  const [isFollowing, setIsFollowing] = useState(false);
+  const [followLoading, setFollowLoading] = useState(false);
+  const [followHover, setFollowHover] = useState(false);
+
+  // Viewed profile's following list
+  const [viewFollowing, setViewFollowing] = useState<string[]>([]);
+  const [viewFollowingLoading, setViewFollowingLoading] = useState(false);
+  const [showFollowingDialog, setShowFollowingDialog] = useState(false);
+
+  // Viewed profile's followers list
+  const [viewFollowers, setViewFollowers] = useState<string[]>([]);
+  const [viewFollowersLoading, setViewFollowersLoading] = useState(false);
+  const [showFollowersDialog, setShowFollowersDialog] = useState(false);
 
   // Determine which pubkey to show
   let viewPubkey = myPubkey;
@@ -37,6 +54,9 @@ export function Profile() {
       // ignore decode errors
     }
   }
+
+  const isOwnProfile = viewPubkey === myPubkey;
+  const canFollow = isLoggedIn && !isReadOnly && !isOwnProfile && !!viewPubkey;
 
   // Request profile data
   useEffect(() => {
@@ -63,9 +83,61 @@ export function Profile() {
     });
   }, [viewPubkey]);
 
+  // Sync follow state and listen for updates
+  useEffect(() => {
+    if (viewPubkey) {
+      setIsFollowing(Follows.isFollowing(viewPubkey));
+    }
+    const unsub = Follows.addListener(() => {
+      if (viewPubkey) {
+        setIsFollowing(Follows.isFollowing(viewPubkey));
+      }
+    });
+    return () => unsub();
+  }, [viewPubkey]);
+
+  // Fetch viewed profile's contact list (kind 3)
+  useEffect(() => {
+    if (!viewPubkey) return;
+    setViewFollowingLoading(true);
+    Follows.fetchContactList(viewPubkey).then((pks) => {
+      setViewFollowing(pks);
+      setViewFollowingLoading(false);
+    }).catch(() => {
+      setViewFollowingLoading(false);
+    });
+  }, [viewPubkey]);
+
+  // Fetch viewed profile's followers
+  useEffect(() => {
+    if (!viewPubkey) return;
+    setViewFollowersLoading(true);
+    Follows.fetchFollowers(viewPubkey).then((pks) => {
+      setViewFollowers(pks);
+      setViewFollowersLoading(false);
+    }).catch(() => {
+      setViewFollowersLoading(false);
+    });
+  }, [viewPubkey]);
+
+  const handleToggleFollow = async () => {
+    if (!viewPubkey || followLoading || !canFollow) return;
+    setFollowLoading(true);
+    try {
+      if (isFollowing) {
+        const success = await Follows.unfollow(viewPubkey);
+        if (success) setIsFollowing(false);
+      } else {
+        const success = await Follows.follow(viewPubkey);
+        if (success) setIsFollowing(true);
+      }
+    } finally {
+      setFollowLoading(false);
+    }
+  };
+
   const profile = viewPubkey ? Profiles.get(viewPubkey) : null;
   const trust = viewPubkey ? WoT.cache.get(viewPubkey) : null;
-  const isOwnProfile = viewPubkey === myPubkey;
   const [isMuted, setIsMuted] = useState(viewPubkey ? Mute.isMuted(viewPubkey) : false);
 
   const handleToggleMute = () => {
@@ -133,9 +205,32 @@ export function Profile() {
                 </button>
               ) : (
                 <>
-                  <button className="px-4 py-2 bg-white text-black rounded-full font-bold hover:bg-zinc-200 transition-colors">
-                    Follow
-                  </button>
+                  {canFollow && (
+                    <button
+                      onClick={handleToggleFollow}
+                      onMouseEnter={() => setFollowHover(true)}
+                      onMouseLeave={() => setFollowHover(false)}
+                      disabled={followLoading}
+                      className={cn(
+                        "px-4 py-2 rounded-full font-bold text-sm transition-colors flex items-center gap-1.5 min-w-[100px] justify-center",
+                        followLoading
+                          ? "bg-zinc-700 text-zinc-400 cursor-wait"
+                          : isFollowing
+                            ? followHover
+                              ? "bg-red-900/20 border border-red-800 text-red-400"
+                              : "bg-transparent border border-zinc-600 text-white"
+                            : "bg-white text-black hover:bg-zinc-200"
+                      )}
+                    >
+                      {followLoading && <Loader2 size={14} className="animate-spin" />}
+                      {followLoading
+                        ? 'Saving...'
+                        : isFollowing
+                          ? followHover ? 'Unfollow' : 'Following'
+                          : 'Follow'
+                      }
+                    </button>
+                  )}
                   <button
                     onClick={handleToggleMute}
                     className={cn(
@@ -180,6 +275,28 @@ export function Profile() {
                   <span className="text-purple-400">{profile.nip05}</span>
                 </div>
               )}
+            </div>
+
+            {/* Following / Followers counts */}
+            <div className="flex gap-4 mt-3">
+              <button
+                onClick={() => setShowFollowingDialog(true)}
+                className="text-sm hover:underline"
+              >
+                <span className="font-bold text-white">
+                  {viewFollowingLoading ? '...' : viewFollowing.length.toLocaleString()}
+                </span>
+                <span className="text-zinc-500 ml-1">Following</span>
+              </button>
+              <button
+                onClick={() => setShowFollowersDialog(true)}
+                className="text-sm hover:underline"
+              >
+                <span className="font-bold text-white">
+                  {viewFollowersLoading ? '...' : viewFollowers.length.toLocaleString()}
+                </span>
+                <span className="text-zinc-500 ml-1">Followers</span>
+              </button>
             </div>
 
             {/* Npub */}
@@ -267,6 +384,24 @@ export function Profile() {
           </div>
         </div>
       </div>
+
+      {/* Following list dialog */}
+      <FollowListDialog
+        open={showFollowingDialog}
+        onOpenChange={setShowFollowingDialog}
+        title={`${displayName} follows`}
+        pubkeys={viewFollowing}
+        loading={viewFollowingLoading}
+      />
+
+      {/* Followers list dialog */}
+      <FollowListDialog
+        open={showFollowersDialog}
+        onOpenChange={setShowFollowersDialog}
+        title={`Followers of ${displayName}`}
+        pubkeys={viewFollowers}
+        loading={viewFollowersLoading}
+      />
     </div>
   );
 }

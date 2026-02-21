@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Shield, Loader2, Users, Globe, Clock } from 'lucide-react';
+import { Shield, Loader2, Users, Globe, ArrowUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useFeedStore } from '@/stores/feedStore';
 import type { FeedMode } from '@/stores/feedStore';
@@ -12,9 +12,10 @@ import { Profiles } from '@/services/profiles';
 import { ParentNotes } from '@/services/parentNotes';
 import { Follows } from '@/services/follows';
 import { Mute } from '@/services/mute';
-import { loadSettings, getSettings } from '@/services/settings';
+import { loadSettings } from '@/services/settings';
 import { NotePost } from '@/app/components/NotePost';
 import { WoTLogo } from '@/app/components/WoTLogo';
+import { usePullToRefresh } from '@/hooks/usePullToRefresh';
 
 export function Feed() {
   const {
@@ -23,14 +24,13 @@ export function Feed() {
     authors,
     eoseReceived,
     relayStatus,
-    pendingCount,
+    newNotesSinceScroll,
     displayLimit,
     feedMode,
     followsTick,
     wotScoringDone,
     loadingMore,
     hasMoreNotes,
-    reachedTimeWindowEnd,
     addEvent,
     setEose,
     setRelayStatus,
@@ -40,8 +40,8 @@ export function Feed() {
     getFilteredNotes,
     loadMore,
     fetchMore,
-    loadOlderPosts,
-    refresh,
+    resetNewNotesSinceScroll,
+    pullRefresh,
     scoreAllNotes,
   } = useFeedStore();
   const { updateTick } = useProfileStore();
@@ -49,9 +49,11 @@ export function Feed() {
   const { hasExtension: wotExtDetected } = useWoTStore();
   const [parentTick, setParentTick] = useState(0);
   const [relayTick, setRelayTick] = useState(0);
+  const [isScrolledDown, setIsScrolledDown] = useState(false);
   const initRef = React.useRef(false);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const throttleRef = useRef(false);
+  const scrollContainerRef = useRef<HTMLElement | null>(null);
 
   // Track per-relay connection changes for the status display
   useEffect(() => {
@@ -61,6 +63,36 @@ export function Feed() {
 
   const connectedRelays = Relay.getConnectedCount();
   const totalRelays = Relay.getUrls().length;
+
+  // Find the scroll container (<main> in Layout.tsx) and track scroll position
+  const getScrollContainer = useCallback(() => scrollContainerRef.current, []);
+
+  useEffect(() => {
+    const main = document.querySelector('main');
+    if (!main) return;
+    scrollContainerRef.current = main;
+
+    const onScroll = () => {
+      setIsScrolledDown(main.scrollTop > 300);
+      if (main.scrollTop < 50) {
+        resetNewNotesSinceScroll();
+      }
+    };
+
+    main.addEventListener('scroll', onScroll, { passive: true });
+    return () => main.removeEventListener('scroll', onScroll);
+  }, [resetNewNotesSinceScroll]);
+
+  // Pull-to-refresh
+  const { pullDistance, isRefreshing, threshold: pullThreshold } = usePullToRefresh({
+    onRefresh: pullRefresh,
+    getScrollContainer,
+  });
+
+  const scrollToTop = useCallback(() => {
+    scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    resetNewNotesSinceScroll();
+  }, [resetNewNotesSinceScroll]);
 
   // If no pubkey (read-only), default to global feed
   useEffect(() => {
@@ -115,13 +147,18 @@ export function Feed() {
   }, []);
 
   // After EOSE, batch-score all notes and load mute list
+  // Reset scoring guard when eoseReceived goes false (pull-to-refresh)
   const scoringRef = React.useRef(false);
+  useEffect(() => {
+    if (!eoseReceived) {
+      scoringRef.current = false;
+    }
+  }, [eoseReceived]);
+
   useEffect(() => {
     if (eoseReceived && !scoringRef.current) {
       scoringRef.current = true;
-      // Load mute list from relay
       Mute.loadFromRelay();
-      // Batch score all notes
       scoreAllNotes();
     }
   }, [eoseReceived, scoreAllNotes]);
@@ -134,7 +171,7 @@ export function Feed() {
   useEffect(() => {
     if (myPubkey && eoseReceived && !Follows.loaded) {
       setFollowingLoading(true);
-      Follows.onUpdate = () => {
+      const unsub = Follows.addListener(() => {
         bumpFollowsTick();
         // Once follows are loaded, subscribe to their notes
         if (Follows.loaded && !followSubRef.current) {
@@ -150,10 +187,11 @@ export function Feed() {
             () => setFollowingLoading(false)
           );
         }
-      };
+      });
       Follows.load(myPubkey).catch(() => {
         setFollowingLoading(false);
       });
+      return () => unsub();
     } else if (!myPubkey) {
       setFollowingLoading(false);
     }
@@ -195,8 +233,6 @@ export function Feed() {
     return () => observerRef.current?.disconnect();
   }, []);
 
-  const settings = getSettings();
-
   return (
     <div className="bg-black min-h-screen text-white pb-24 md:pb-0">
       {/* Header */}
@@ -218,6 +254,25 @@ export function Feed() {
         <FeedTabs mode={feedMode} onChange={setFeedMode} />
       </header>
 
+      {/* Pull-to-refresh indicator */}
+      <div
+        className="overflow-hidden transition-[height] duration-200 ease-out"
+        style={{ height: isRefreshing ? 48 : Math.min(pullDistance * 0.6, 48) }}
+      >
+        <div className="flex items-center justify-center h-12 text-zinc-400">
+          <Loader2
+            className={cn('transition-transform duration-200', isRefreshing && 'animate-spin')}
+            size={20}
+            style={{
+              transform: !isRefreshing
+                ? `rotate(${Math.min((pullDistance / pullThreshold) * 180, 180)}deg)`
+                : undefined,
+              opacity: isRefreshing ? 1 : Math.min(pullDistance / 30, 1),
+            }}
+          />
+        </div>
+      </div>
+
       {/* WoT extension status */}
       {eoseReceived && !wotExtDetected && (
         <div className="px-4 py-2 bg-yellow-900/20 text-yellow-400 text-xs text-center border-b border-zinc-800">
@@ -227,16 +282,6 @@ export function Feed() {
             Install extension
           </a>
         </div>
-      )}
-
-      {/* New notes banner */}
-      {pendingCount > 0 && (
-        <button
-          onClick={refresh}
-          className="w-full py-2 bg-purple-600/20 text-purple-400 text-sm font-medium hover:bg-purple-600/30 transition-colors border-b border-zinc-800"
-        >
-          {pendingCount} new note{pendingCount > 1 ? 's' : ''} — tap to show
-        </button>
       )}
 
       {/* Initial loading: only show when we have ZERO notes */}
@@ -301,19 +346,10 @@ export function Feed() {
         </div>
       )}
 
-      {/* Reached end of time window — offer to load older posts */}
-      {reachedTimeWindowEnd && !loadingMore && hasNotes && (
-        <div className="text-center py-6 px-4 border-t border-zinc-800">
-          <Clock size={20} className="mx-auto mb-2 text-zinc-600" />
-          <p className="text-zinc-500 text-sm mb-3">
-            No more posts in the last {settings.timeWindow} hours
-          </p>
-          <button
-            onClick={loadOlderPosts}
-            className="px-4 py-2 bg-purple-600/20 text-purple-400 text-sm font-medium rounded-lg hover:bg-purple-600/30 transition-colors"
-          >
-            Load older posts
-          </button>
+      {/* End of feed */}
+      {!hasMoreNotes && hasNotes && !loadingMore && (
+        <div className="text-center py-6 text-zinc-600 text-sm">
+          You've seen it all
         </div>
       )}
 
@@ -324,9 +360,20 @@ export function Feed() {
         </div>
       )}
 
-      {/* Infinite scroll sentinel — triggers loadMore / fetchMore */}
-      {hasNotes && !loadingMore && !reachedTimeWindowEnd && hasMoreNotes && (
+      {/* Infinite scroll sentinel */}
+      {hasNotes && !loadingMore && hasMoreNotes && (
         <div ref={setSentinelRef} className="h-10" />
+      )}
+
+      {/* Scroll-to-top FAB when new notes arrive */}
+      {newNotesSinceScroll > 0 && isScrolledDown && (
+        <button
+          onClick={scrollToTop}
+          className="fixed bottom-24 md:bottom-6 right-6 z-20 bg-purple-600 hover:bg-purple-500 text-white rounded-full px-4 py-2 shadow-lg flex items-center gap-2 transition-all text-sm"
+        >
+          <ArrowUp size={16} />
+          {newNotesSinceScroll} new
+        </button>
       )}
     </div>
   );

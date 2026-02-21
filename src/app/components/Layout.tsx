@@ -106,7 +106,7 @@ export function Layout() {
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto relative w-full md:max-w-2xl md:mx-auto md:border-r md:border-zinc-800 no-scrollbar bg-black">
+      <main className="flex-1 overflow-y-auto relative w-full md:max-w-2xl md:mx-auto md:border-r md:border-zinc-800 no-scrollbar overscroll-contain-y bg-black">
         <div className={cn("min-h-full md:pb-0", hideBottomNav ? "pb-0" : "pb-20")}>
           <Outlet />
         </div>

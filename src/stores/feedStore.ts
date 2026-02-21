@@ -13,6 +13,31 @@ const PAGE_SIZE = 20;
 const FETCH_COOLDOWN_MS = 2000;
 const BATCH_FLUSH_INTERVAL = 300; // ms between batch flushes
 const BATCH_MIN_SIZE = 10; // flush when buffer reaches this size
+const MAX_LOOKBACK_DAYS = 30;
+
+// ── sessionStorage cache for seenIds ──
+const SEEN_IDS_KEY = 'wot-feed-seen-ids';
+const MAX_CACHED_IDS = 5000;
+
+function loadCachedSeenIds(): Set<string> {
+  try {
+    const raw = sessionStorage.getItem(SEEN_IDS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw) as string[];
+      return new Set(arr.slice(-MAX_CACHED_IDS));
+    }
+  } catch { /* ignore */ }
+  return new Set();
+}
+
+function saveCachedSeenIds(ids: Set<string>): void {
+  try {
+    const arr = [...ids].slice(-MAX_CACHED_IDS);
+    sessionStorage.setItem(SEEN_IDS_KEY, JSON.stringify(arr));
+  } catch { /* quota exceeded */ }
+}
+
+// sessionStorage save listeners are set up after the store is created (bottom of file)
 
 export type FeedMode = 'following' | 'global';
 
@@ -97,8 +122,7 @@ interface FeedStore {
   displayLimit: number;
   eoseReceived: boolean;
   initialRenderDone: boolean;
-  pendingCount: number;
-  pendingEvents: NostrEvent[];
+  newNotesSinceScroll: number;
   showingBookmarks: boolean;
   feedMode: FeedMode;
   followsTick: number;
@@ -111,7 +135,6 @@ interface FeedStore {
   loadingMore: boolean;
   hasMoreNotes: boolean;
   fetchCooldownUntil: number;
-  reachedTimeWindowEnd: boolean;
 
   addEvent: (event: NostrEvent) => void;
   setEose: () => void;
@@ -121,8 +144,8 @@ interface FeedStore {
   bumpFollowsTick: () => void;
   loadMore: () => void;
   fetchMore: () => Promise<void>;
-  loadOlderPosts: () => Promise<void>;
-  refresh: () => void;
+  resetNewNotesSinceScroll: () => void;
+  pullRefresh: () => Promise<void>;
   toggleBookmarks: () => void;
   scoreAllNotes: () => Promise<void>;
 
@@ -132,14 +155,13 @@ interface FeedStore {
 export const useFeedStore = create<FeedStore>((set, get) => ({
   notes: [],
   notesById: new Map(),
-  seenIds: new Set(),
+  seenIds: loadCachedSeenIds(),
   authors: new Set(),
   totalReceived: 0,
   displayLimit: PAGE_SIZE,
   eoseReceived: false,
   initialRenderDone: false,
-  pendingCount: 0,
-  pendingEvents: [],
+  newNotesSinceScroll: 0,
   showingBookmarks: false,
   feedMode: 'following' as FeedMode,
   followsTick: 0,
@@ -151,27 +173,81 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
   loadingMore: false,
   hasMoreNotes: true,
   fetchCooldownUntil: 0,
-  reachedTimeWindowEnd: false,
 
   addEvent: (event: NostrEvent) => {
     const state = get();
     // Dedup against both store and batch buffer
     if (state.seenIds.has(event.id) || bufferSeenIds.has(event.id)) return;
 
-    // After initial render, buffer live events for "new notes" banner
+    // After initial render, insert new notes directly into the feed
     if (state.initialRenderDone) {
       const newSeenIds = new Set(state.seenIds);
       newSeenIds.add(event.id);
       const newAuthors = new Set(state.authors);
       newAuthors.add(event.pubkey);
       Profiles.request(event.pubkey);
+
+      const note = processEvent(event);
+      if (note.replyTo) ParentNotes.request(note.replyTo);
+
+      const newNotes = [note, ...state.notes];
+      const newNotesById = new Map(state.notesById);
+      newNotesById.set(note.id, note);
+
+      // Enforce maxNotes cap
+      const maxNotes = getSettings().maxNotes;
+      let finalNotes = newNotes;
+      let finalNotesById = newNotesById;
+      if (finalNotes.length > maxNotes) {
+        finalNotes = finalNotes.slice(0, maxNotes);
+        finalNotesById = new Map();
+        for (const n of finalNotes) finalNotesById.set(n.id, n);
+      }
+
       set({
+        notes: finalNotes,
+        notesById: finalNotesById,
         seenIds: newSeenIds,
         authors: newAuthors,
-        pendingEvents: [...state.pendingEvents, event],
-        pendingCount: state.pendingCount + 1,
         totalReceived: state.totalReceived + 1,
+        displayLimit: state.displayLimit + 1,
+        newNotesSinceScroll: state.newNotesSinceScroll + 1,
       } as any);
+
+      // Background: score unknown pubkeys and update the note with trust data
+      if (!WoT.cache.has(event.pubkey)) {
+        WoT.scoreBatch([event.pubkey]).then(() => {
+          const s = get();
+          const trust = WoT.cache.get(event.pubkey);
+          if (!trust) return;
+          const existing = s.notesById.get(event.id);
+          if (!existing) return;
+
+          const settings = getSettings();
+          const trustWeight = settings.trustWeight;
+          const recencyWeight = 1 - trustWeight;
+          const maxAge = settings.timeWindow * 60 * 60;
+          const nowTs = Math.floor(Date.now() / 1000);
+          const ageSeconds = nowTs - existing.created_at;
+          const recencyScore = Math.max(0, 1 - ageSeconds / maxAge);
+          const combinedScore = trust.score * trustWeight + recencyScore * recencyWeight;
+
+          const updated = {
+            ...existing,
+            trustScore: trust.score,
+            distance: trust.distance,
+            trusted: trust.trusted,
+            paths: trust.paths,
+            combinedScore,
+          };
+
+          const updatedNotes = s.notes.map((n) => (n.id === event.id ? updated : n));
+          const updatedById = new Map(s.notesById);
+          updatedById.set(event.id, updated);
+          set({ notes: updatedNotes, notesById: updatedById } as any);
+        });
+      }
+
       return;
     }
 
@@ -204,7 +280,7 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
     if (state.displayLimit < filtered.length) {
       // Still have loaded notes to display
       set({ displayLimit: state.displayLimit + PAGE_SIZE });
-    } else if (!state.loadingMore && state.hasMoreNotes && !state.reachedTimeWindowEnd) {
+    } else if (!state.loadingMore && state.hasMoreNotes) {
       // Ran out of loaded notes — fetch more from relays
       state.fetchMore();
     }
@@ -244,9 +320,29 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
     }
 
     if (events.length === 0) {
-      // No more within the time window
-      set({ loadingMore: false, reachedTimeWindowEnd: true });
-      return;
+      // Auto-extend time window by 7 days and retry
+      const nowTs = Math.floor(Date.now() / 1000);
+      const extendedSince = oldest - 7 * 24 * 60 * 60;
+
+      // Safety cap: don't look back more than MAX_LOOKBACK_DAYS
+      if (nowTs - extendedSince > MAX_LOOKBACK_DAYS * 86400) {
+        set({ loadingMore: false, hasMoreNotes: false });
+        return;
+      }
+
+      let extendedEvents: NostrEvent[];
+      if (state.feedMode === 'following') {
+        const pubkeys = Array.from(Follows.following);
+        extendedEvents = await Relay.fetchOlderFollowingNotes(pubkeys, oldest, 25, extendedSince);
+      } else {
+        extendedEvents = await Relay.fetchOlderNotes(oldest, 25, extendedSince);
+      }
+
+      if (extendedEvents.length === 0) {
+        set({ loadingMore: false, hasMoreNotes: false });
+        return;
+      }
+      events = extendedEvents;
     }
 
     // Bulk add new events
@@ -317,147 +413,19 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
     }
   },
 
-  /**
-   * Load older posts beyond the current time window.
-   * Called when user taps "Load older posts".
-   */
-  loadOlderPosts: async () => {
-    const state = get();
-    if (state.loadingMore) return;
+  resetNewNotesSinceScroll: () => set({ newNotesSinceScroll: 0 }),
 
-    set({ loadingMore: true, reachedTimeWindowEnd: false });
-
-    // Find oldest note timestamp
-    const oldest = state.notes.reduce(
-      (min, n) => Math.min(min, n.created_at),
-      Infinity
-    );
-
-    if (oldest === Infinity) {
-      set({ loadingMore: false });
-      return;
-    }
-
-    // Extend time window: fetch up to 7 more days
-    const extendedSince = oldest - 7 * 24 * 60 * 60;
-
-    let events: NostrEvent[];
-    if (state.feedMode === 'following') {
-      const pubkeys = Array.from(Follows.following);
-      events = await Relay.fetchOlderFollowingNotes(pubkeys, oldest, 25, extendedSince);
-    } else {
-      events = await Relay.fetchOlderNotes(oldest, 25, extendedSince);
-    }
-
-    if (events.length === 0) {
-      set({ loadingMore: false, hasMoreNotes: false });
-      return;
-    }
-
-    // Process and add
-    const current = get();
-    const newNotes = [...current.notes];
-    const newNotesById = new Map(current.notesById);
-    const newSeenIds = new Set(current.seenIds);
-    const newAuthors = new Set(current.authors);
-    let addedCount = 0;
-
-    for (const event of events) {
-      if (newSeenIds.has(event.id)) continue;
-      newSeenIds.add(event.id);
-      newAuthors.add(event.pubkey);
-      Profiles.request(event.pubkey);
-
-      const note = processEvent(event);
-      if (note.replyTo) ParentNotes.request(note.replyTo);
-      newNotes.push(note);
-      newNotesById.set(note.id, note);
-      addedCount++;
-    }
-
+  pullRefresh: async () => {
+    // Re-establish relay subscriptions to fetch fresh notes
     set({
-      notes: newNotes,
-      notesById: newNotesById,
-      seenIds: newSeenIds,
-      authors: newAuthors,
-      loadingMore: false,
-      hasMoreNotes: addedCount > 0,
-      // Don't bump displayLimit — let loadMore reveal them via scroll
-    } as any);
-
-    // Background: score new authors and re-process notes with trust data
-    const unscoredPubkeys = [...new Set(events.map((e) => e.pubkey))].filter(
-      (p) => !WoT.cache.has(p)
-    );
-    if (unscoredPubkeys.length > 0) {
-      WoT.scoreBatch(unscoredPubkeys).then(() => {
-        const s = get();
-        const settings = getSettings();
-        const trustWeight = settings.trustWeight;
-        const recencyWeight = 1 - trustWeight;
-        const maxAge = settings.timeWindow * 60 * 60;
-        const nowTs = Math.floor(Date.now() / 1000);
-
-        const updatedNotes = s.notes.map((note) => {
-          const trust = WoT.cache.get(note.pubkey);
-          if (!trust || note.trusted) return note;
-          const ageSeconds = nowTs - note.created_at;
-          const recencyScore = Math.max(0, 1 - ageSeconds / maxAge);
-          const combinedScore = trust.score * trustWeight + recencyScore * recencyWeight;
-          return {
-            ...note,
-            trustScore: trust.score,
-            distance: trust.distance,
-            trusted: trust.trusted,
-            paths: trust.paths,
-            combinedScore,
-          };
-        });
-
-        const updatedById = new Map<string, Note>();
-        for (const n of updatedNotes) updatedById.set(n.id, n);
-        set({ notes: updatedNotes, notesById: updatedById } as any);
-      });
-    }
-  },
-
-  refresh: () => {
-    const state = get();
-    const pending = state.pendingEvents;
-
-    if (pending.length > 0) {
-      // Process buffered events into notes
-      let newNotes = [...state.notes];
-      const newNotesById = new Map(state.notesById);
-
-      for (const event of pending) {
-        const note = processEvent(event);
-        if (note.replyTo) ParentNotes.request(note.replyTo);
-        newNotes.push(note);
-        newNotesById.set(note.id, note);
-      }
-
-      const maxNotes = getSettings().maxNotes;
-      if (newNotes.length > maxNotes) {
-        newNotes.sort((a, b) => b.combinedScore - a.combinedScore);
-        newNotes = newNotes.slice(0, maxNotes);
-      }
-
-      set({
-        notes: newNotes,
-        notesById: newNotesById,
-        pendingEvents: [],
-        pendingCount: 0,
-        displayLimit: PAGE_SIZE,
-        shuffleSeed: Date.now(),
-      } as any);
-    } else {
-      set({
-        pendingCount: 0,
-        displayLimit: PAGE_SIZE,
-        shuffleSeed: Date.now(),
-      });
-    }
+      initialRenderDone: false,
+      eoseReceived: false,
+      wotScoringDone: false,
+      displayLimit: PAGE_SIZE,
+      shuffleSeed: Date.now(),
+      hasMoreNotes: true,
+    });
+    Relay.reconnect();
   },
 
   setFeedMode: (mode: FeedMode) => {
@@ -465,7 +433,6 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
       feedMode: mode,
       displayLimit: PAGE_SIZE,
       shuffleSeed: Date.now(),
-      reachedTimeWindowEnd: false,
       hasMoreNotes: true,
     });
   },
@@ -570,3 +537,13 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
     return shuffled.map((s) => s.note);
   },
 }));
+
+// Persist seenIds to sessionStorage
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    saveCachedSeenIds(useFeedStore.getState().seenIds);
+  });
+  setInterval(() => {
+    saveCachedSeenIds(useFeedStore.getState().seenIds);
+  }, 30000);
+}
