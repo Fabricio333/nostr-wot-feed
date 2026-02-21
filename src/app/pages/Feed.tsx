@@ -286,7 +286,10 @@ export function Feed() {
 
       {/* Initial loading: only show when we have ZERO notes */}
       {!hasNotes && (isStreaming || isWaitingForFollows) && (
-        <div className="flex items-center justify-center gap-2 py-8 text-zinc-400">
+        <div
+          className="flex items-center justify-center gap-2 py-8 text-zinc-400"
+          style={{ animation: 'fade-in 0.3s ease-out both' }}
+        >
           <Loader2 className="animate-spin" size={20} />
           <span>
             {isStreaming
@@ -298,7 +301,10 @@ export function Feed() {
 
       {/* Streaming indicator: subtle bar while notes are still arriving */}
       {hasNotes && isStreaming && (
-        <div className="px-4 py-1.5 text-xs text-zinc-500 text-center border-b border-zinc-800 flex items-center justify-center gap-2">
+        <div
+          className="px-4 py-1.5 text-xs text-zinc-500 text-center border-b border-zinc-800 flex items-center justify-center gap-2"
+          style={{ animation: 'fade-in 0.3s ease-out both' }}
+        >
           <Loader2 className="animate-spin" size={12} />
           <span>Loading more from relays... ({totalReceived} received)</span>
         </div>
@@ -355,7 +361,7 @@ export function Feed() {
 
       {/* Loading more spinner (pagination in progress) */}
       {loadingMore && (
-        <div className="py-4 text-center">
+        <div className="py-4 text-center" style={{ animation: 'fade-in 0.2s ease-out both' }}>
           <Loader2 className="animate-spin mx-auto text-zinc-600" size={20} />
         </div>
       )}

@@ -246,6 +246,59 @@ class RelayManager {
     });
   }
 
+  /**
+   * Fetch the user's NIP-65 relay list (kind 10002) from relays.
+   * Falls back to relay hints in kind 3 (contacts) if no 10002 found.
+   */
+  async fetchUserRelays(pubkey: string): Promise<string[]> {
+    if (!this.pool) return [];
+
+    const urls = this.getUrls();
+    try {
+      // Try NIP-65 relay list metadata (kind 10002)
+      const events = await this.pool.querySync(
+        urls,
+        { kinds: [10002], authors: [pubkey], limit: 1 } as any
+      );
+
+      if (events.length > 0) {
+        // Sort by created_at desc to get the latest
+        events.sort((a: any, b: any) => b.created_at - a.created_at);
+        const relayTags = (events[0] as any).tags.filter(
+          (t: string[]) => t[0] === 'r'
+        );
+        const relayUrls = relayTags
+          .map((t: string[]) => t[1])
+          .filter((u: string) => u && u.startsWith('wss://'));
+        if (relayUrls.length > 0) return relayUrls;
+      }
+
+      // Fallback: try kind 3 (contacts) which sometimes has relay JSON in content
+      const k3 = await this.pool.querySync(
+        urls,
+        { kinds: [3], authors: [pubkey], limit: 1 } as any
+      );
+      if (k3.length > 0) {
+        k3.sort((a: any, b: any) => b.created_at - a.created_at);
+        const content = (k3[0] as any).content;
+        if (content) {
+          try {
+            const relayMap = JSON.parse(content);
+            const parsed = Object.keys(relayMap).filter((u) =>
+              u.startsWith('wss://')
+            );
+            if (parsed.length > 0) return parsed;
+          } catch {
+            // content not valid JSON
+          }
+        }
+      }
+    } catch {
+      // query failed
+    }
+    return [];
+  }
+
   async addRelay(url: string): Promise<boolean> {
     const urls = this.getUrls();
     if (urls.includes(url)) return false;

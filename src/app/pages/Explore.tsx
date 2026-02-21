@@ -313,6 +313,7 @@ function MediaGridItem({ note }: { note: Note }) {
   return (
     <div
       className="relative group cursor-pointer rounded-lg overflow-hidden"
+      style={{ animation: 'note-enter 0.4s ease-out both' }}
       onClick={() => navigate(`/note/${note.id}`)}
     >
       <img

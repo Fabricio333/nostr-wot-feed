@@ -71,6 +71,7 @@ export function NotePost({ note, parentTick }: { note: Note; parentTick: number 
   return (
     <article
       className="p-4 hover:bg-zinc-900/30 transition-colors cursor-pointer border-b border-zinc-800"
+      style={{ animation: 'note-enter 0.35s ease-out both' }}
       onClick={handleNoteClick}
     >
       <div className="flex gap-3">

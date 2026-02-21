@@ -11,8 +11,8 @@ import { getSettings } from '@/services/settings';
 
 const PAGE_SIZE = 20;
 const FETCH_COOLDOWN_MS = 2000;
-const BATCH_FLUSH_INTERVAL = 300; // ms between batch flushes
-const BATCH_MIN_SIZE = 10; // flush when buffer reaches this size
+const BATCH_FLUSH_INTERVAL = 150; // ms between batch flushes
+const BATCH_MIN_SIZE = 5; // flush when buffer reaches this size
 const MAX_LOOKBACK_DAYS = 30;
 
 // ── sessionStorage cache for seenIds ──

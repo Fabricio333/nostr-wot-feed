@@ -16,6 +16,7 @@ interface SettingsStore extends Settings {
   setTheme: (theme: 'dark' | 'light') => void;
   addRelay: (url: string) => void;
   removeRelay: (url: string) => void;
+  setRelays: (urls: string[]) => void;
 }
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
@@ -63,5 +64,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     if (relays.length === 0) return;
     set({ relays });
     setSetting('relays', relays);
+  },
+
+  setRelays: (urls) => {
+    if (urls.length === 0) return;
+    set({ relays: urls });
+    setSetting('relays', urls);
   },
 }));

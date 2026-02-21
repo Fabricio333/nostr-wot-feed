@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
-import { ArrowLeft, Trash2, Plus, Shield, User, X } from 'lucide-react';
+import { ArrowLeft, Trash2, Plus, Shield, User, X, RotateCcw, Download } from 'lucide-react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useWoTStore } from '@/stores/wotStore';
@@ -12,6 +12,8 @@ import { Profiles } from '@/services/profiles';
 import { Signer } from '@/services/signer';
 import { truncateNpub, pubkeyColor } from '@/utils/helpers';
 import { nip19 } from 'nostr-tools';
+import { defaultSettings } from '@/services/settings';
+import { toast } from 'sonner';
 import type { SortMode } from '@/types/nostr';
 
 export function Settings() {
@@ -22,6 +24,7 @@ export function Settings() {
   const { updateTick } = useProfileStore();
   const [newRelay, setNewRelay] = useState('');
   const [relayTick, setRelayTick] = useState(0);
+  const [loadingUserRelays, setLoadingUserRelays] = useState(false);
 
   // Track per-relay connection changes
   useEffect(() => {
@@ -51,6 +54,34 @@ export function Settings() {
   const handleRemoveRelay = (url: string) => {
     settings.removeRelay(url);
     Relay.removeRelay(url);
+  };
+
+  const handleResetRelays = () => {
+    settings.setRelays(defaultSettings.relays);
+    Relay.reconnect();
+    toast.success('Relays reset to default');
+  };
+
+  const handleLoadUserRelays = async () => {
+    if (!pubkey) {
+      toast.error('Not logged in');
+      return;
+    }
+    setLoadingUserRelays(true);
+    try {
+      const userRelays = await Relay.fetchUserRelays(pubkey);
+      if (userRelays.length === 0) {
+        toast.error('No relay list found for your account');
+        return;
+      }
+      settings.setRelays(userRelays);
+      Relay.reconnect();
+      toast.success(`Loaded ${userRelays.length} relays from your profile`);
+    } catch {
+      toast.error('Failed to fetch relay list');
+    } finally {
+      setLoadingUserRelays(false);
+    }
   };
 
   const handleLogout = async () => {
@@ -211,6 +242,25 @@ export function Settings() {
             >
               <Plus size={18} />
             </button>
+          </div>
+          <div className="flex gap-2 mt-3">
+            <button
+              onClick={handleResetRelays}
+              className="flex-1 flex items-center justify-center gap-2 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors"
+            >
+              <RotateCcw size={14} />
+              Reset to Default
+            </button>
+            {pubkey && (
+              <button
+                onClick={handleLoadUserRelays}
+                disabled={loadingUserRelays}
+                className="flex-1 flex items-center justify-center gap-2 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-sm transition-colors disabled:opacity-50"
+              >
+                <Download size={14} />
+                {loadingUserRelays ? 'Loading...' : 'Load My Relays'}
+              </button>
+            )}
           </div>
         </Section>
 
