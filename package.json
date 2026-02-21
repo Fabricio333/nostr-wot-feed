@@ -1,7 +1,7 @@
 {
-  "name": "nostr-wot-feed",
+  "name": "nostr-wtf",
   "version": "2.0.0",
-  "description": "Nostr Web of Trust feed",
+  "description": "Nostr WTF - Web of Trust Feed",
   "private": true,
   "type": "module",
   "scripts": {

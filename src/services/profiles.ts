@@ -50,6 +50,7 @@ class ProfileService {
           name: meta.name || meta.display_name || '',
           displayName: meta.display_name || meta.name || '',
           picture: meta.picture || '',
+          banner: meta.banner || '',
           about: meta.about || '',
           nip05: meta.nip05 || '',
         });

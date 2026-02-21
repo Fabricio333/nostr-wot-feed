@@ -7,6 +7,7 @@ import { CreatePost } from "./pages/CreatePost";
 import { Profile } from "./pages/Profile";
 import { Login } from "./pages/Login";
 import { Settings } from "./pages/Settings";
+import { NoteThread } from "./pages/NoteThread";
 
 export const router = createBrowserRouter([
   {
@@ -18,6 +19,7 @@ export const router = createBrowserRouter([
     Component: Layout,
     children: [
       { index: true, Component: Feed },
+      { path: "note/:id", Component: NoteThread },
       { path: "messages", Component: Messages },
       { path: "messages/:id", Component: Chat },
       { path: "create", Component: CreatePost },

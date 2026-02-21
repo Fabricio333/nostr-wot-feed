@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { Link as LinkIcon, Shield, User, Loader2 } from 'lucide-react';
+import { Link as LinkIcon, Shield, User, Loader2, VolumeX } from 'lucide-react';
 import { useParams, Link } from 'react-router';
 import { useAuthStore } from '@/stores/authStore';
 import { useProfileStore } from '@/stores/profileStore';
 import { useWoTStore } from '@/stores/wotStore';
 import { Profiles } from '@/services/profiles';
 import { WoT } from '@/services/wot';
+import { Mute } from '@/services/mute';
 import { Relay } from '@/services/relay';
 import { parseContent } from '@/services/content';
 import { truncateNpub, pubkeyColor, timeAgo, trustColor } from '@/utils/helpers';
@@ -65,6 +66,13 @@ export function Profile() {
   const profile = viewPubkey ? Profiles.get(viewPubkey) : null;
   const trust = viewPubkey ? WoT.cache.get(viewPubkey) : null;
   const isOwnProfile = viewPubkey === myPubkey;
+  const [isMuted, setIsMuted] = useState(viewPubkey ? Mute.isMuted(viewPubkey) : false);
+
+  const handleToggleMute = () => {
+    if (!viewPubkey) return;
+    Mute.toggle(viewPubkey);
+    setIsMuted(!isMuted);
+  };
 
   const displayName = profile?.displayName || profile?.name || (viewPubkey ? truncateNpub(viewPubkey) : 'Unknown');
   const handleStr = profile?.name ? `@${profile.name}` : (viewPubkey ? truncateNpub(viewPubkey) : '@unknown');
@@ -93,10 +101,18 @@ export function Profile() {
     <div className="bg-black min-h-screen text-white pb-20 md:pb-0">
       <div className="relative">
         {/* Cover Image */}
-        <div
-          className="h-32 md:h-48"
-          style={{ background: `linear-gradient(135deg, ${fallbackColor}, ${pubkeyColor((viewPubkey || '').split('').reverse().join(''))})` }}
-        />
+        {profile?.banner ? (
+          <img
+            src={profile.banner}
+            alt="Banner"
+            className="h-32 md:h-48 w-full object-cover"
+          />
+        ) : (
+          <div
+            className="h-32 md:h-48"
+            style={{ background: `linear-gradient(135deg, ${fallbackColor}, ${pubkeyColor((viewPubkey || '').split('').reverse().join(''))})` }}
+          />
+        )}
 
         {/* Profile Info */}
         <div className="px-4">
@@ -110,15 +126,31 @@ export function Profile() {
                 <User size={48} className="text-white/60" />
               )}
             </div>
-            {isOwnProfile ? (
-              <button className="px-4 py-2 bg-transparent border border-zinc-600 rounded-full font-bold hover:bg-zinc-900 transition-colors">
-                Edit Profile
-              </button>
-            ) : (
-              <button className="px-4 py-2 bg-white text-black rounded-full font-bold hover:bg-zinc-200 transition-colors">
-                Follow
-              </button>
-            )}
+            <div className="flex gap-2">
+              {isOwnProfile ? (
+                <button className="px-4 py-2 bg-transparent border border-zinc-600 rounded-full font-bold hover:bg-zinc-900 transition-colors">
+                  Edit Profile
+                </button>
+              ) : (
+                <>
+                  <button className="px-4 py-2 bg-white text-black rounded-full font-bold hover:bg-zinc-200 transition-colors">
+                    Follow
+                  </button>
+                  <button
+                    onClick={handleToggleMute}
+                    className={cn(
+                      "px-3 py-2 rounded-full font-bold text-sm transition-colors flex items-center gap-1",
+                      isMuted
+                        ? "bg-red-900/30 border border-red-800 text-red-400 hover:bg-red-900/50"
+                        : "bg-transparent border border-zinc-600 text-zinc-400 hover:bg-zinc-900"
+                    )}
+                  >
+                    <VolumeX size={14} />
+                    {isMuted ? 'Unmute' : 'Mute'}
+                  </button>
+                </>
+              )}
+            </div>
           </div>
 
           <div className="mb-6">
@@ -247,32 +279,36 @@ function ProfileNote({ note }: { note: NostrEvent }) {
   const images = parsed.filter((p) => p.type === 'image');
 
   return (
-    <article className="p-4 hover:bg-zinc-900/30 transition-colors">
-      <div className="flex items-baseline gap-2 mb-1">
-        <span className="font-bold text-sm text-white">{displayName}</span>
-        <span className="text-zinc-500 text-sm">· {timeAgo(note.created_at)}</span>
-      </div>
-      <div className="text-[15px] leading-relaxed text-zinc-100 whitespace-pre-wrap">
-        {parsed.filter((p) => p.type !== 'image' && p.type !== 'video').map((part, i) => {
-          if (part.type === 'link') {
-            return (
-              <a key={i} href={part.value} target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline break-all">
-                {part.value.replace(/^https?:\/\//, '').slice(0, 50)}
-              </a>
-            );
-          }
-          if (part.type === 'hashtag') {
-            return <span key={i} className="text-purple-400">{part.value}</span>;
-          }
-          return <span key={i}>{part.value}</span>;
-        })}
-      </div>
-      {images.length > 0 && (
-        <div className="mt-2 rounded-xl overflow-hidden">
-          <img src={images[0].value} alt="" className="w-full max-h-64 object-cover" loading="lazy" />
+    <Link to={`/note/${note.id}`} className="block">
+      <article className="p-4 hover:bg-zinc-900/30 transition-colors cursor-pointer">
+        <div className="flex items-baseline gap-2 mb-1">
+          <span className="font-bold text-sm text-white">{displayName}</span>
+          <span className="text-zinc-500 text-sm">· {timeAgo(note.created_at)}</span>
         </div>
-      )}
-    </article>
+        <div className="text-[15px] leading-relaxed text-zinc-100 whitespace-pre-wrap">
+          {parsed.filter((p) => p.type !== 'image' && p.type !== 'video').map((part, i) => {
+            if (part.type === 'link') {
+              return (
+                <a key={i} href={part.value} target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline break-all"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {part.value.replace(/^https?:\/\//, '').slice(0, 50)}
+                </a>
+              );
+            }
+            if (part.type === 'hashtag') {
+              return <span key={i} className="text-purple-400">{part.value}</span>;
+            }
+            return <span key={i}>{part.value}</span>;
+          })}
+        </div>
+        {images.length > 0 && (
+          <div className="mt-2 rounded-xl overflow-hidden">
+            <img src={images[0].value} alt="" className="w-full max-h-64 object-cover" loading="lazy" />
+          </div>
+        )}
+      </article>
+    </Link>
   );
 }
 

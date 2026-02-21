@@ -40,6 +40,7 @@ export interface Profile {
   name: string;
   displayName: string;
   picture: string;
+  banner: string;
   about: string;
   nip05: string;
 }

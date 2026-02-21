@@ -42,9 +42,9 @@ class RelayManager {
     const since = Math.floor(Date.now() / 1000) - settings.timeWindow * 60 * 60;
     const limit = settings.maxNotes;
 
-    this._sub = this.pool.subscribeMany(
+    this._sub = this.pool.subscribe(
       urls,
-      [{ kinds: [1], since, limit }] as any,
+      { kinds: [1], since, limit } as any,
       {
         onevent: (event: NostrEvent) => {
           this._onEvent?.(event);
@@ -100,8 +100,13 @@ class RelayManager {
       });
     }
 
+    // Use subscribeMap to send multiple filters per relay correctly
+    const requests = urls.flatMap((url) =>
+      filters.map((filter) => ({ url, filter }))
+    );
+
     let eoseFired = false;
-    this._followSub = this.pool.subscribeMany(urls, filters, {
+    this._followSub = this.pool.subscribeMap(requests, {
       onevent: (event: NostrEvent) => {
         onEvent(event);
       },

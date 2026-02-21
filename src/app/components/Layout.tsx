@@ -67,7 +67,7 @@ export function Layout() {
       {/* Desktop Sidebar */}
       <aside className="hidden md:flex flex-col w-64 border-r border-zinc-800 p-4">
         <div className="mb-8 px-4">
-          <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-500 to-pink-500 bg-clip-text text-transparent">Nostr WoT</h1>
+          <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-500 to-pink-500 bg-clip-text text-transparent">Nostr WTF</h1>
         </div>
 
         <nav className="flex-1 space-y-2">
@@ -104,7 +104,7 @@ export function Layout() {
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto relative w-full md:max-w-2xl md:mx-auto md:border-r md:border-zinc-800 no-scrollbar">
+      <main className="flex-1 overflow-y-auto relative w-full md:max-w-2xl md:mx-auto md:border-r md:border-zinc-800 no-scrollbar bg-black">
         <div className={cn("min-h-full md:pb-0", hideBottomNav ? "pb-0" : "pb-20")}>
           <Outlet />
         </div>
@@ -113,7 +113,7 @@ export function Layout() {
       {/* Right Sidebar (Desktop only) */}
       <aside className="hidden lg:block w-80 p-6 pl-8">
         <div className="bg-zinc-900 rounded-xl p-4 mb-6">
-          <h3 className="font-bold mb-4 text-lg">Nostr WoT Feed</h3>
+          <h3 className="font-bold mb-4 text-lg">Nostr WTF</h3>
           <p className="text-zinc-400 text-sm">
             Your feed is filtered by Web of Trust. Notes from people closer to you in the social graph are scored higher.
           </p>

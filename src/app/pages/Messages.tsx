@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useProfileStore } from '@/stores/profileStore';
 import { useFeedStore } from '@/stores/feedStore';
 import { Profiles } from '@/services/profiles';
+import { Follows } from '@/services/follows';
 import { timeAgo, truncateNpub, pubkeyColor } from '@/utils/helpers';
 
 export function Messages() {
@@ -34,7 +35,7 @@ export function Messages() {
   const fiveMinAgo = Math.floor(Date.now() / 1000) - 5 * 60;
   const recentActivePubkeys = new Set<string>();
   for (const note of notes) {
-    if (note.created_at >= fiveMinAgo && note.pubkey !== myPubkey && note.trusted) {
+    if (note.created_at >= fiveMinAgo && note.pubkey !== myPubkey && Follows.following.has(note.pubkey)) {
       recentActivePubkeys.add(note.pubkey);
     }
   }
@@ -73,7 +74,7 @@ export function Messages() {
       {/* Active in last 5 minutes */}
       {activeNowList.length > 0 && (
         <div className="mt-2">
-          <h2 className="px-4 text-xs font-semibold text-zinc-500 mb-2 uppercase tracking-wider">Active Now</h2>
+          <h2 className="px-4 text-xs font-semibold text-zinc-500 mb-2 uppercase tracking-wider">Active in the last 5 mins</h2>
           <div className="flex gap-4 px-4 overflow-x-auto pb-4 no-scrollbar">
             {activeNowList.map((pk) => (
               <PartnerAvatar key={pk} pubkey={pk} showOnline />

@@ -52,8 +52,10 @@ class FollowsService {
 
       this._loaded = true;
       this.onUpdate?.();
-    } catch {
-      // ignore — will retry on next call
+    } catch (e) {
+      console.warn('[Follows] Failed to load follow list:', e);
+      this._loaded = true;
+      this.onUpdate?.();
     } finally {
       this._loading = false;
     }

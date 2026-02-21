@@ -2,6 +2,7 @@ import type { NostrEvent, Conversation, DMMessage } from '@/types/nostr';
 import { Relay } from './relay';
 import { Signer } from './signer';
 import { Profiles } from './profiles';
+import { Mute } from './mute';
 
 class DMService {
   private _events: NostrEvent[] = [];
@@ -53,24 +54,24 @@ class DMService {
       Profiles.request(pk);
     }
 
-    // Subscribe to live DMs
-    this._sub = pool.subscribeMany(
-      urls,
-      [
-        { kinds: [4], '#p': [myPubkey] },
-        { kinds: [4], authors: [myPubkey] },
-      ] as any,
-      {
-        onevent: (event: NostrEvent) => {
-          if (seenIds.has(event.id)) return;
-          seenIds.add(event.id);
-          this._events.push(event);
-          const partner = this._getPartner(event);
-          if (partner) Profiles.request(partner);
-          this.onEvent?.();
-        },
-      }
+    // Subscribe to live DMs — use subscribeMap for multiple filters
+    const dmFilters = [
+      { kinds: [4], '#p': [myPubkey] },
+      { kinds: [4], authors: [myPubkey] },
+    ];
+    const dmRequests = urls.flatMap((url) =>
+      dmFilters.map((filter) => ({ url, filter }))
     );
+    this._sub = pool.subscribeMap(dmRequests, {
+      onevent: (event: NostrEvent) => {
+        if (seenIds.has(event.id)) return;
+        seenIds.add(event.id);
+        this._events.push(event);
+        const partner = this._getPartner(event);
+        if (partner) Profiles.request(partner);
+        this.onEvent?.();
+      },
+    });
   }
 
   private _getPartner(event: NostrEvent): string | null {
@@ -126,6 +127,9 @@ class DMService {
     const conversations: Conversation[] = [];
 
     for (const [partnerPubkey, data] of convMap) {
+      // Skip muted users
+      if (Mute.isMuted(partnerPubkey)) continue;
+
       // Get most recent event for last message preview
       const latest = data.events.reduce((a, b) =>
         a.created_at > b.created_at ? a : b
@@ -152,6 +156,7 @@ class DMService {
 
   async getMessages(partnerPubkey: string): Promise<DMMessage[]> {
     if (!this._myPubkey) return [];
+    if (Mute.isMuted(partnerPubkey)) return [];
 
     const partnerEvents = this._events.filter((ev) => {
       const partner = this._getPartner(ev);
