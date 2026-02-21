@@ -18,6 +18,7 @@ class RelayManager {
   // Per-relay connection tracking
   relayStatuses = new Map<string, boolean>();
   onRelayStatusChange: (() => void) | null = null;
+  private _pollTimer: ReturnType<typeof setInterval> | null = null;
 
   getUrls(): string[] {
     return getSettings().relays;
@@ -31,17 +32,49 @@ class RelayManager {
     return count;
   }
 
-  /** Snapshot per-relay status from the pool */
+  /** Poll per-relay status from SimplePool.listConnectionStatus() */
   refreshStatuses(): void {
     if (!this.pool) return;
     try {
       const statuses = (this.pool as any).listConnectionStatus?.();
       if (statuses instanceof Map) {
-        this.relayStatuses = new Map(statuses);
-        this.onRelayStatusChange?.();
+        const urls = this.getUrls();
+        const next = new Map<string, boolean>();
+        // Normalize URLs (pool may add trailing slash)
+        for (const url of urls) {
+          const withSlash = url.endsWith('/') ? url : url + '/';
+          const found = statuses.get(url) ?? statuses.get(withSlash);
+          next.set(url, found === true);
+        }
+        // Only notify if something changed
+        let changed = next.size !== this.relayStatuses.size;
+        if (!changed) {
+          for (const [k, v] of next) {
+            if (this.relayStatuses.get(k) !== v) { changed = true; break; }
+          }
+        }
+        if (changed) {
+          this.relayStatuses = next;
+          this.onRelayStatusChange?.();
+        }
       }
     } catch {
-      // listConnectionStatus not available in this version
+      // listConnectionStatus not available
+    }
+  }
+
+  /** Start polling relay statuses every 3s */
+  private _startStatusPolling(): void {
+    this._stopStatusPolling();
+    // Initial check after short delay (relays need time to connect)
+    setTimeout(() => this.refreshStatuses(), 1500);
+    this._pollTimer = setInterval(() => this.refreshStatuses(), 3000);
+  }
+
+  private _stopStatusPolling(): void {
+    if (this._pollTimer) {
+      clearInterval(this._pollTimer);
+      this._pollTimer = null;
     }
   }
 
@@ -60,18 +93,9 @@ class RelayManager {
 
     if (!this.pool) {
       this.pool = new SimplePool();
-      // Wire per-relay connection callbacks
-      const p = this.pool as any;
-      p.onRelayConnectionSuccess = (url: string) => {
-        this.relayStatuses.set(url, true);
-        this.onRelayStatusChange?.();
-      };
-      p.onRelayConnectionFailure = (url: string) => {
-        this.relayStatuses.set(url, false);
-        this.onRelayStatusChange?.();
-      };
     }
     this.connect();
+    this._startStatusPolling();
   }
 
   connect(): void {
@@ -165,10 +189,12 @@ class RelayManager {
       this._sub.close();
       this._sub = null;
     }
-    // Reset per-relay statuses — they'll be re-populated via callbacks
+    // Reset statuses — they'll be re-populated by polling
     this.relayStatuses.clear();
     this.onRelayStatusChange?.();
     this.connect();
+    // Refresh after relays have time to reconnect
+    setTimeout(() => this.refreshStatuses(), 2000);
   }
 
   /**
@@ -243,6 +269,7 @@ class RelayManager {
   }
 
   destroy(): void {
+    this._stopStatusPolling();
     if (this._followSub) {
       this._followSub.close();
       this._followSub = null;
@@ -255,6 +282,7 @@ class RelayManager {
       this.pool.close(this.getUrls());
       this.pool = null;
     }
+    this.relayStatuses.clear();
   }
 }
 

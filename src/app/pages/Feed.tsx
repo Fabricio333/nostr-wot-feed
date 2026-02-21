@@ -55,12 +55,8 @@ export function Feed() {
 
   // Track per-relay connection changes for the status display
   useEffect(() => {
-    const prev = Relay.onRelayStatusChange;
-    Relay.onRelayStatusChange = () => {
-      setRelayTick((t) => t + 1);
-      prev?.();
-    };
-    return () => { Relay.onRelayStatusChange = prev; };
+    Relay.onRelayStatusChange = () => setRelayTick((t) => t + 1);
+    return () => { Relay.onRelayStatusChange = null; };
   }, []);
 
   const connectedRelays = Relay.getConnectedCount();

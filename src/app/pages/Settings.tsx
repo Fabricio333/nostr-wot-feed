@@ -25,14 +25,10 @@ export function Settings() {
 
   // Track per-relay connection changes
   useEffect(() => {
-    const prev = Relay.onRelayStatusChange;
-    Relay.onRelayStatusChange = () => {
-      setRelayTick((t) => t + 1);
-      prev?.();
-    };
-    // Also refresh statuses from pool snapshot on mount
+    Relay.onRelayStatusChange = () => setRelayTick((t) => t + 1);
+    // Refresh statuses from pool snapshot on mount
     Relay.refreshStatuses();
-    return () => { Relay.onRelayStatusChange = prev; };
+    return () => { Relay.onRelayStatusChange = null; };
   }, []);
 
   let npubDisplay = '';
