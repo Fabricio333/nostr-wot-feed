@@ -4,13 +4,78 @@ import { WoT } from '@/services/wot';
 import { Profiles } from '@/services/profiles';
 import { ParentNotes } from '@/services/parentNotes';
 import { Follows } from '@/services/follows';
+import { Relay } from '@/services/relay';
 import { processEvent, filterNotes, sortNotes } from '@/services/feed';
 import { Bookmarks } from '@/services/bookmarks';
 import { getSettings } from '@/services/settings';
 
 const PAGE_SIZE = 20;
+const FETCH_COOLDOWN_MS = 2000;
+const BATCH_FLUSH_INTERVAL = 300; // ms between batch flushes
+const BATCH_MIN_SIZE = 10; // flush when buffer reaches this size
 
 export type FeedMode = 'following' | 'global';
+
+// ── Module-level event batching ──
+// During initial streaming (before EOSE), events are batched so the UI
+// renders in groups of ~10 instead of one-by-one.
+let eventBuffer: NostrEvent[] = [];
+let bufferSeenIds = new Set<string>();
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleFlush() {
+  if (eventBuffer.length >= BATCH_MIN_SIZE) {
+    if (flushTimer) clearTimeout(flushTimer);
+    flushEventBuffer();
+  } else if (!flushTimer) {
+    flushTimer = setTimeout(flushEventBuffer, BATCH_FLUSH_INTERVAL);
+  }
+}
+
+function flushEventBuffer() {
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  if (eventBuffer.length === 0) return;
+
+  const events = eventBuffer;
+  eventBuffer = [];
+
+  const state = useFeedStore.getState();
+  const newNotes = [...state.notes];
+  const newNotesById = new Map(state.notesById);
+  const newSeenIds = new Set(state.seenIds);
+  const newAuthors = new Set(state.authors);
+
+  // Merge buffer dedup set into store
+  for (const id of bufferSeenIds) newSeenIds.add(id);
+  bufferSeenIds = new Set();
+
+  for (const event of events) {
+    newAuthors.add(event.pubkey);
+    Profiles.request(event.pubkey);
+    const note = processEvent(event);
+    if (note.replyTo) ParentNotes.request(note.replyTo);
+    newNotes.push(note);
+    newNotesById.set(note.id, note);
+  }
+
+  const maxNotes = getSettings().maxNotes;
+  let finalNotes = newNotes;
+  let finalNotesById = newNotesById;
+  if (finalNotes.length > maxNotes) {
+    finalNotes.sort((a, b) => b.combinedScore - a.combinedScore);
+    finalNotes = finalNotes.slice(0, maxNotes);
+    finalNotesById = new Map();
+    for (const n of finalNotes) finalNotesById.set(n.id, n);
+  }
+
+  useFeedStore.setState({
+    notes: finalNotes,
+    notesById: finalNotesById,
+    seenIds: newSeenIds,
+    authors: newAuthors,
+    totalReceived: state.totalReceived + events.length,
+  } as any);
+}
 
 // Seeded PRNG (mulberry32)
 function mulberry32(seed: number) {
@@ -42,6 +107,12 @@ interface FeedStore {
   wotScoringDone: boolean;
   shuffleSeed: number;
 
+  // Pagination state
+  loadingMore: boolean;
+  hasMoreNotes: boolean;
+  fetchCooldownUntil: number;
+  reachedTimeWindowEnd: boolean;
+
   addEvent: (event: NostrEvent) => void;
   setEose: () => void;
   setRelayStatus: (status: FeedStore['relayStatus']) => void;
@@ -49,6 +120,8 @@ interface FeedStore {
   setFeedMode: (mode: FeedMode) => void;
   bumpFollowsTick: () => void;
   loadMore: () => void;
+  fetchMore: () => Promise<void>;
+  loadOlderPosts: () => Promise<void>;
   refresh: () => void;
   toggleBookmarks: () => void;
   scoreAllNotes: () => Promise<void>;
@@ -75,20 +148,23 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
   wotScoringDone: false,
   shuffleSeed: Date.now(),
 
+  loadingMore: false,
+  hasMoreNotes: true,
+  fetchCooldownUntil: 0,
+  reachedTimeWindowEnd: false,
+
   addEvent: (event: NostrEvent) => {
     const state = get();
-    if (state.seenIds.has(event.id)) return;
+    // Dedup against both store and batch buffer
+    if (state.seenIds.has(event.id) || bufferSeenIds.has(event.id)) return;
 
-    const newSeenIds = new Set(state.seenIds);
-    newSeenIds.add(event.id);
-    const newAuthors = new Set(state.authors);
-    newAuthors.add(event.pubkey);
-
-    // Request profile (non-blocking, batched)
-    Profiles.request(event.pubkey);
-
-    // After initial render, buffer live events instead of adding to notes[]
+    // After initial render, buffer live events for "new notes" banner
     if (state.initialRenderDone) {
+      const newSeenIds = new Set(state.seenIds);
+      newSeenIds.add(event.id);
+      const newAuthors = new Set(state.authors);
+      newAuthors.add(event.pubkey);
+      Profiles.request(event.pubkey);
       set({
         seenIds: newSeenIds,
         authors: newAuthors,
@@ -99,38 +175,18 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
       return;
     }
 
-    // Process event immediately with whatever WoT data is cached
-    const note = processEvent(event);
-    if (note.replyTo) ParentNotes.request(note.replyTo);
-
-    const newNotes = [...state.notes, note];
-    const newNotesById = new Map(state.notesById);
-    newNotesById.set(note.id, note);
-
-    const maxNotes = getSettings().maxNotes;
-    let finalNotes = newNotes;
-    let finalNotesById = newNotesById;
-    if (finalNotes.length > maxNotes) {
-      finalNotes.sort((a, b) => b.combinedScore - a.combinedScore);
-      finalNotes = finalNotes.slice(0, maxNotes);
-      finalNotesById = new Map();
-      for (const n of finalNotes) finalNotesById.set(n.id, n);
-    }
-
-    set({
-      notes: finalNotes,
-      notesById: finalNotesById,
-      seenIds: newSeenIds,
-      authors: newAuthors,
-      totalReceived: state.totalReceived + 1,
-    } as any);
+    // During initial streaming: batch events for group rendering
+    bufferSeenIds.add(event.id);
+    eventBuffer.push(event);
+    scheduleFlush();
   },
 
   setEose: () => {
+    // Flush any remaining batched events before marking EOSE
+    flushEventBuffer();
     set({
       eoseReceived: true,
       initialRenderDone: true,
-      displayLimit: PAGE_SIZE,
     });
   },
 
@@ -138,11 +194,231 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
 
   setWotStatus: (status) => set({ wotStatus: status }),
 
+  /**
+   * Bump the display limit to show more already-loaded notes.
+   * If we've shown everything, trigger a relay fetch for older notes.
+   */
   loadMore: () => {
     const state = get();
     const filtered = state.getFilteredNotes();
-    if (state.displayLimit >= filtered.length) return;
-    set({ displayLimit: state.displayLimit + PAGE_SIZE });
+    if (state.displayLimit < filtered.length) {
+      // Still have loaded notes to display
+      set({ displayLimit: state.displayLimit + PAGE_SIZE });
+    } else if (!state.loadingMore && state.hasMoreNotes && !state.reachedTimeWindowEnd) {
+      // Ran out of loaded notes — fetch more from relays
+      state.fetchMore();
+    }
+  },
+
+  /**
+   * Fetch older notes from relays. Throttled to avoid relay saturation.
+   */
+  fetchMore: async () => {
+    const state = get();
+    if (state.loadingMore || !state.hasMoreNotes) return;
+
+    // Throttle: enforce cooldown between fetches
+    const now = Date.now();
+    if (now < state.fetchCooldownUntil) return;
+
+    set({ loadingMore: true, fetchCooldownUntil: now + FETCH_COOLDOWN_MS });
+
+    // Find the oldest note timestamp as cursor
+    const oldest = state.notes.reduce(
+      (min, n) => Math.min(min, n.created_at),
+      Infinity
+    );
+
+    if (oldest === Infinity) {
+      set({ loadingMore: false, hasMoreNotes: false });
+      return;
+    }
+
+    // Fetch from relay based on feed mode
+    let events: NostrEvent[];
+    if (state.feedMode === 'following') {
+      const pubkeys = Array.from(Follows.following);
+      events = await Relay.fetchOlderFollowingNotes(pubkeys, oldest);
+    } else {
+      events = await Relay.fetchOlderNotes(oldest);
+    }
+
+    if (events.length === 0) {
+      // No more within the time window
+      set({ loadingMore: false, reachedTimeWindowEnd: true });
+      return;
+    }
+
+    // Bulk add new events
+    const current = get();
+    const newNotes = [...current.notes];
+    const newNotesById = new Map(current.notesById);
+    const newSeenIds = new Set(current.seenIds);
+    const newAuthors = new Set(current.authors);
+    let addedCount = 0;
+
+    for (const event of events) {
+      if (newSeenIds.has(event.id)) continue;
+      newSeenIds.add(event.id);
+      newAuthors.add(event.pubkey);
+      Profiles.request(event.pubkey);
+
+      const note = processEvent(event);
+      if (note.replyTo) ParentNotes.request(note.replyTo);
+      newNotes.push(note);
+      newNotesById.set(note.id, note);
+      addedCount++;
+    }
+
+    set({
+      notes: newNotes,
+      notesById: newNotesById,
+      seenIds: newSeenIds,
+      authors: newAuthors,
+      loadingMore: false,
+      hasMoreNotes: addedCount > 0,
+      // Don't bump displayLimit — let loadMore reveal them via scroll
+    } as any);
+
+    // Background: score new authors that aren't cached yet
+    const unscoredPubkeys = [...new Set(events.map((e) => e.pubkey))].filter(
+      (p) => !WoT.cache.has(p)
+    );
+    if (unscoredPubkeys.length > 0) {
+      WoT.scoreBatch(unscoredPubkeys).then(() => {
+        // Re-score the newly added notes with trust data
+        const s = get();
+        const settings = getSettings();
+        const trustWeight = settings.trustWeight;
+        const recencyWeight = 1 - trustWeight;
+        const maxAge = settings.timeWindow * 60 * 60;
+        const nowTs = Math.floor(Date.now() / 1000);
+
+        const updatedNotes = s.notes.map((note) => {
+          const trust = WoT.cache.get(note.pubkey);
+          if (!trust || note.trusted) return note;
+          const ageSeconds = nowTs - note.created_at;
+          const recencyScore = Math.max(0, 1 - ageSeconds / maxAge);
+          const combinedScore = trust.score * trustWeight + recencyScore * recencyWeight;
+          return {
+            ...note,
+            trustScore: trust.score,
+            distance: trust.distance,
+            trusted: trust.trusted,
+            paths: trust.paths,
+            combinedScore,
+          };
+        });
+
+        const updatedById = new Map<string, Note>();
+        for (const n of updatedNotes) updatedById.set(n.id, n);
+        set({ notes: updatedNotes, notesById: updatedById } as any);
+      });
+    }
+  },
+
+  /**
+   * Load older posts beyond the current time window.
+   * Called when user taps "Load older posts".
+   */
+  loadOlderPosts: async () => {
+    const state = get();
+    if (state.loadingMore) return;
+
+    set({ loadingMore: true, reachedTimeWindowEnd: false });
+
+    // Find oldest note timestamp
+    const oldest = state.notes.reduce(
+      (min, n) => Math.min(min, n.created_at),
+      Infinity
+    );
+
+    if (oldest === Infinity) {
+      set({ loadingMore: false });
+      return;
+    }
+
+    // Extend time window: fetch up to 7 more days
+    const extendedSince = oldest - 7 * 24 * 60 * 60;
+
+    let events: NostrEvent[];
+    if (state.feedMode === 'following') {
+      const pubkeys = Array.from(Follows.following);
+      events = await Relay.fetchOlderFollowingNotes(pubkeys, oldest, 25, extendedSince);
+    } else {
+      events = await Relay.fetchOlderNotes(oldest, 25, extendedSince);
+    }
+
+    if (events.length === 0) {
+      set({ loadingMore: false, hasMoreNotes: false });
+      return;
+    }
+
+    // Process and add
+    const current = get();
+    const newNotes = [...current.notes];
+    const newNotesById = new Map(current.notesById);
+    const newSeenIds = new Set(current.seenIds);
+    const newAuthors = new Set(current.authors);
+    let addedCount = 0;
+
+    for (const event of events) {
+      if (newSeenIds.has(event.id)) continue;
+      newSeenIds.add(event.id);
+      newAuthors.add(event.pubkey);
+      Profiles.request(event.pubkey);
+
+      const note = processEvent(event);
+      if (note.replyTo) ParentNotes.request(note.replyTo);
+      newNotes.push(note);
+      newNotesById.set(note.id, note);
+      addedCount++;
+    }
+
+    set({
+      notes: newNotes,
+      notesById: newNotesById,
+      seenIds: newSeenIds,
+      authors: newAuthors,
+      loadingMore: false,
+      hasMoreNotes: addedCount > 0,
+      // Don't bump displayLimit — let loadMore reveal them via scroll
+    } as any);
+
+    // Background: score new authors and re-process notes with trust data
+    const unscoredPubkeys = [...new Set(events.map((e) => e.pubkey))].filter(
+      (p) => !WoT.cache.has(p)
+    );
+    if (unscoredPubkeys.length > 0) {
+      WoT.scoreBatch(unscoredPubkeys).then(() => {
+        const s = get();
+        const settings = getSettings();
+        const trustWeight = settings.trustWeight;
+        const recencyWeight = 1 - trustWeight;
+        const maxAge = settings.timeWindow * 60 * 60;
+        const nowTs = Math.floor(Date.now() / 1000);
+
+        const updatedNotes = s.notes.map((note) => {
+          const trust = WoT.cache.get(note.pubkey);
+          if (!trust || note.trusted) return note;
+          const ageSeconds = nowTs - note.created_at;
+          const recencyScore = Math.max(0, 1 - ageSeconds / maxAge);
+          const combinedScore = trust.score * trustWeight + recencyScore * recencyWeight;
+          return {
+            ...note,
+            trustScore: trust.score,
+            distance: trust.distance,
+            trusted: trust.trusted,
+            paths: trust.paths,
+            combinedScore,
+          };
+        });
+
+        const updatedById = new Map<string, Note>();
+        for (const n of updatedNotes) updatedById.set(n.id, n);
+        set({ notes: updatedNotes, notesById: updatedById } as any);
+      });
+    }
   },
 
   refresh: () => {
@@ -185,7 +461,13 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
   },
 
   setFeedMode: (mode: FeedMode) => {
-    set({ feedMode: mode, displayLimit: PAGE_SIZE, shuffleSeed: Date.now() });
+    set({
+      feedMode: mode,
+      displayLimit: PAGE_SIZE,
+      shuffleSeed: Date.now(),
+      reachedTimeWindowEnd: false,
+      hasMoreNotes: true,
+    });
   },
 
   bumpFollowsTick: () => {
@@ -250,10 +532,18 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
       pool = pool.filter((n) => followSet.has(n.pubkey));
     }
 
+    // WoT filtering for global feed:
+    // - Only apply trust filters AFTER scoring is done, otherwise all notes
+    //   have trusted=false and the filter would show nothing.
+    // - Before scoring: show all notes sorted by newest (temporary view).
+    // - After scoring: apply full WoT filtering and trust-weighted sorting.
+    const isGlobal = state.feedMode === 'global';
+    const canApplyTrust = isGlobal && state.wotScoringDone;
+
     const filtered = filterNotes(pool, {
-      trustedOnly: state.feedMode === 'global' ? settings.trustedOnly : false,
+      trustedOnly: canApplyTrust ? settings.trustedOnly : false,
       maxHops: settings.maxHops,
-      trustThreshold: state.feedMode === 'global' ? settings.trustThreshold : 0,
+      trustThreshold: canApplyTrust ? settings.trustThreshold : 0,
       showBookmarks: state.showingBookmarks,
       bookmarkIds: state.showingBookmarks
         ? new Set(Bookmarks.list.keys())
@@ -265,7 +555,12 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
       return sortNotes(filtered, 'newest');
     }
 
-    // For global tab, apply weighted shuffle with stable seed
+    // Global tab before scoring: sort by newest as placeholder
+    if (!state.wotScoringDone) {
+      return sortNotes(filtered, 'newest');
+    }
+
+    // Global tab after scoring: apply trust-weighted shuffle with stable seed
     const rng = mulberry32(state.shuffleSeed);
     const shuffled = filtered.map((note) => ({
       note,

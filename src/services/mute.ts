@@ -4,6 +4,11 @@ import { WoT } from './wot';
 
 class MuteService {
   list = new Set<string>();
+  onUpdate: (() => void) | null = null;
+
+  private _notify() {
+    this.onUpdate?.();
+  }
 
   async loadFromRelay(): Promise<void> {
     if (!WoT.myPubkey) return;
@@ -28,6 +33,7 @@ class MuteService {
 
       this.list.clear();
       relayPubkeys.forEach((pk: string) => this.list.add(pk));
+      this._notify();
     } catch {
       // relay load failed
     }
@@ -62,11 +68,13 @@ class MuteService {
     } else {
       this.list.add(pubkey);
     }
+    this._notify();
     this.publishToRelay();
   }
 
   unmute(pubkey: string): void {
     this.list.delete(pubkey);
+    this._notify();
     this.publishToRelay();
   }
 }

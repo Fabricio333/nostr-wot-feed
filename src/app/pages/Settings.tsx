@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
 import { ArrowLeft, Trash2, Plus, Shield, User, X } from 'lucide-react';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -47,6 +47,17 @@ export function Settings() {
     await logout();
     navigate('/login');
   };
+
+  // Re-render when mute list changes (from unmute button or relay load)
+  const [muteTick, setMuteTick] = useState(0);
+  useEffect(() => {
+    const prev = Mute.onUpdate;
+    Mute.onUpdate = () => {
+      setMuteTick((t) => t + 1);
+      prev?.();
+    };
+    return () => { Mute.onUpdate = prev; };
+  }, []);
 
   const mutedPubkeys = [...Mute.list];
 

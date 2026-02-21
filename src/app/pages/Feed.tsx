@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Shield, Loader2, Users, Globe } from 'lucide-react';
+import { Shield, Loader2, Users, Globe, Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useFeedStore } from '@/stores/feedStore';
 import type { FeedMode } from '@/stores/feedStore';
@@ -12,8 +12,9 @@ import { Profiles } from '@/services/profiles';
 import { ParentNotes } from '@/services/parentNotes';
 import { Follows } from '@/services/follows';
 import { Mute } from '@/services/mute';
-import { loadSettings } from '@/services/settings';
+import { loadSettings, getSettings } from '@/services/settings';
 import { NotePost } from '@/app/components/NotePost';
+import { WoTLogo } from '@/app/components/WoTLogo';
 
 export function Feed() {
   const {
@@ -27,6 +28,9 @@ export function Feed() {
     feedMode,
     followsTick,
     wotScoringDone,
+    loadingMore,
+    hasMoreNotes,
+    reachedTimeWindowEnd,
     addEvent,
     setEose,
     setRelayStatus,
@@ -35,6 +39,8 @@ export function Feed() {
     bumpFollowsTick,
     getFilteredNotes,
     loadMore,
+    fetchMore,
+    loadOlderPosts,
     refresh,
     scoreAllNotes,
   } = useFeedStore();
@@ -43,7 +49,8 @@ export function Feed() {
   const { hasExtension: wotExtDetected } = useWoTStore();
   const [parentTick, setParentTick] = useState(0);
   const initRef = React.useRef(false);
-  const sentinelRef = useRef<HTMLDivElement>(null);
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const throttleRef = useRef(false);
 
   // If no pubkey (read-only), default to global feed
   useEffect(() => {
@@ -145,34 +152,50 @@ export function Feed() {
   const filteredNotes = getFilteredNotes();
   const displayedNotes = filteredNotes.slice(0, displayLimit);
 
-  const isLoading = !eoseReceived
-    || (feedMode === 'following' && followingLoading)
-    || (feedMode === 'global' && !wotScoringDone);
+  // Show notes progressively — only show a full-screen blocker if we have zero notes
+  const hasNotes = displayedNotes.length > 0;
+  const isStreaming = !eoseReceived;
+  const isWaitingForFollows = feedMode === 'following' && followingLoading;
 
-  // Infinite scroll via IntersectionObserver
-  useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel) return;
+  // Infinite scroll via IntersectionObserver with callback ref
+  // Uses a callback ref so the observer is properly set up/torn down
+  // when the sentinel element mounts/unmounts due to conditional rendering.
+  const setSentinelRef = useCallback((node: HTMLDivElement | null) => {
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
+    if (!node) return;
 
-    const observer = new IntersectionObserver(
+    observerRef.current = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting) {
+        if (entries[0].isIntersecting && !throttleRef.current) {
+          throttleRef.current = true;
           loadMore();
+          setTimeout(() => { throttleRef.current = false; }, 800);
         }
       },
-      { threshold: 0 }
+      { threshold: 0, rootMargin: '200px' }
     );
-
-    observer.observe(sentinel);
-    return () => observer.disconnect();
+    observerRef.current.observe(node);
   }, [loadMore]);
+
+  // Cleanup observer on unmount
+  useEffect(() => {
+    return () => observerRef.current?.disconnect();
+  }, []);
+
+  const settings = getSettings();
 
   return (
     <div className="bg-black min-h-screen text-white pb-24 md:pb-0">
       {/* Header */}
       <header className="sticky top-0 z-10 bg-black/80 backdrop-blur-md border-b border-zinc-800">
         <div className="px-4 pt-3 pb-0 flex justify-between items-center">
-          <h1 className="text-xl font-bold bg-gradient-to-r from-purple-500 to-pink-500 bg-clip-text text-transparent">Nostr WTF</h1>
+          <div className="flex items-center gap-2">
+            <WoTLogo size={24} className="text-purple-400" />
+            <h1 className="text-xl font-bold bg-gradient-to-r from-purple-500 to-pink-500 bg-clip-text text-transparent">Nostr WTF</h1>
+          </div>
           <div className="flex items-center gap-3 text-xs text-zinc-500">
             <span>{filteredNotes.length} notes</span>
             <span className="text-zinc-700">|</span>
@@ -206,29 +229,44 @@ export function Feed() {
         </button>
       )}
 
-      {/* Loading state */}
-      {isLoading && (
+      {/* Initial loading: only show when we have ZERO notes */}
+      {!hasNotes && (isStreaming || isWaitingForFollows) && (
         <div className="flex items-center justify-center gap-2 py-8 text-zinc-400">
           <Loader2 className="animate-spin" size={20} />
           <span>
-            {!eoseReceived
-              ? `Loading feed from relays... (${totalReceived} received)`
-              : feedMode === 'global' && !wotScoringDone
-              ? 'Scoring trust...'
+            {isStreaming
+              ? `Connecting to relays... (${totalReceived} received)`
               : 'Loading notes from people you follow...'}
           </span>
         </div>
       )}
 
-      {/* Notes list */}
+      {/* Streaming indicator: subtle bar while notes are still arriving */}
+      {hasNotes && isStreaming && (
+        <div className="px-4 py-1.5 text-xs text-zinc-500 text-center border-b border-zinc-800 flex items-center justify-center gap-2">
+          <Loader2 className="animate-spin" size={12} />
+          <span>Loading more from relays... ({totalReceived} received)</span>
+        </div>
+      )}
+
+      {/* WoT scoring indicator for global feed */}
+      {feedMode === 'global' && eoseReceived && !wotScoringDone && (
+        <div className="px-4 py-2 bg-purple-900/20 text-purple-300 text-xs text-center border-b border-zinc-800 flex items-center justify-center gap-2">
+          <Shield size={12} />
+          <Loader2 className="animate-spin" size={12} />
+          <span>Scoring trust for {authors.size} authors — feed will re-sort when done</span>
+        </div>
+      )}
+
+      {/* Notes list — rendered immediately as notes arrive */}
       <div className="max-w-xl mx-auto divide-y divide-zinc-800">
         {displayedNotes.map((note) => (
           <NotePost key={note.id} note={note} parentTick={parentTick} />
         ))}
       </div>
 
-      {/* Empty state */}
-      {eoseReceived && !followingLoading && filteredNotes.length === 0 && (feedMode !== 'global' || wotScoringDone) && (
+      {/* Empty state — only after loading is definitively done */}
+      {eoseReceived && !followingLoading && !loadingMore && filteredNotes.length === 0 && (
         <div className="text-center py-16 text-zinc-500">
           {feedMode === 'following' ? (
             <>
@@ -253,11 +291,32 @@ export function Feed() {
         </div>
       )}
 
-      {/* Infinite scroll sentinel */}
-      {displayLimit < filteredNotes.length && (
-        <div ref={sentinelRef} className="py-4 text-center">
+      {/* Reached end of time window — offer to load older posts */}
+      {reachedTimeWindowEnd && !loadingMore && hasNotes && (
+        <div className="text-center py-6 px-4 border-t border-zinc-800">
+          <Clock size={20} className="mx-auto mb-2 text-zinc-600" />
+          <p className="text-zinc-500 text-sm mb-3">
+            No more posts in the last {settings.timeWindow} hours
+          </p>
+          <button
+            onClick={loadOlderPosts}
+            className="px-4 py-2 bg-purple-600/20 text-purple-400 text-sm font-medium rounded-lg hover:bg-purple-600/30 transition-colors"
+          >
+            Load older posts
+          </button>
+        </div>
+      )}
+
+      {/* Loading more spinner (pagination in progress) */}
+      {loadingMore && (
+        <div className="py-4 text-center">
           <Loader2 className="animate-spin mx-auto text-zinc-600" size={20} />
         </div>
+      )}
+
+      {/* Infinite scroll sentinel — triggers loadMore / fetchMore */}
+      {hasNotes && !loadingMore && !reachedTimeWindowEnd && hasMoreNotes && (
+        <div ref={setSentinelRef} className="h-10" />
       )}
     </div>
   );

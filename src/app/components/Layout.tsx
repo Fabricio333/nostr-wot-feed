@@ -8,6 +8,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { Profiles } from '@/services/profiles';
 import { loadSettings } from '@/services/settings';
 import { truncateNpub } from '@/utils/helpers';
+import { WoTLogo } from './WoTLogo';
 
 export function Layout() {
   const location = useLocation();
@@ -66,7 +67,8 @@ export function Layout() {
     <div className="flex h-screen w-full bg-black text-white overflow-hidden">
       {/* Desktop Sidebar */}
       <aside className="hidden md:flex flex-col w-64 border-r border-zinc-800 p-4">
-        <div className="mb-8 px-4">
+        <div className="mb-8 px-4 flex items-center gap-2">
+          <WoTLogo size={28} className="text-purple-400 flex-shrink-0" />
           <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-500 to-pink-500 bg-clip-text text-transparent">Nostr WTF</h1>
         </div>
 

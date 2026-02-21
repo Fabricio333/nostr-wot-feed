@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { MessageSquare, Repeat2, Heart, Share, Shield, VolumeX } from 'lucide-react';
+import { MessageSquare, Repeat2, Heart, Shield } from 'lucide-react';
+import { NoteActionsMenu } from './NoteActionsMenu';
 import { cn } from '@/lib/utils';
 import { Link, useNavigate } from 'react-router';
 import { useProfileStore } from '@/stores/profileStore';
@@ -92,19 +93,28 @@ export function NotePost({ note, parentTick }: { note: Note; parentTick: number 
           </div>
         </Link>
         <div className="flex-1 min-w-0">
-          <div className="flex items-baseline gap-2">
-            <Link
-              to={`/profile/${note.pubkey}`}
-              className="font-bold hover:underline truncate text-white"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {displayName}
-            </Link>
-            <span className="text-zinc-500 text-sm truncate">{handle}</span>
-            <span className="text-zinc-500 text-sm">· {timeAgo(note.created_at)}</span>
-            {note.trusted && (
-              <TrustIndicator distance={note.distance} score={note.trustScore} paths={note.paths} />
-            )}
+          <div className="flex items-start justify-between">
+            <div className="flex items-baseline gap-2 min-w-0 flex-wrap">
+              <Link
+                to={`/profile/${note.pubkey}`}
+                className="font-bold hover:underline truncate text-white"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {displayName}
+              </Link>
+              <span className="text-zinc-500 text-sm truncate">{handle}</span>
+              <span className="text-zinc-500 text-sm">· {timeAgo(note.created_at)}</span>
+              {note.trusted && (
+                <TrustIndicator distance={note.distance} score={note.trustScore} paths={note.paths} />
+              )}
+            </div>
+            <NoteActionsMenu
+              noteId={note.id}
+              pubkey={note.pubkey}
+              content={note.content}
+              isMuted={muted}
+              onMuteToggle={handleMute}
+            />
           </div>
 
           {/* Reply context — clickable to open parent thread */}
@@ -165,7 +175,7 @@ export function NotePost({ note, parentTick }: { note: Note; parentTick: number 
           )}
 
           {/* Actions */}
-          <div className="mt-3 flex justify-between max-w-sm text-zinc-500">
+          <div className="mt-3 flex gap-6 text-zinc-500">
             <ActionButton icon={MessageSquare} color="blue" />
             <ActionButton
               icon={Repeat2}
@@ -178,13 +188,6 @@ export function NotePost({ note, parentTick }: { note: Note; parentTick: number 
               active={liked}
               color="pink"
               onClick={handleLike}
-            />
-            <ActionButton icon={Share} />
-            <ActionButton
-              icon={VolumeX}
-              color="pink"
-              onClick={handleMute}
-              title="Mute user"
             />
           </div>
         </div>

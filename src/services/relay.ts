@@ -4,6 +4,10 @@ import { getSettings, setSetting } from './settings';
 
 type RelayStatus = 'connected' | 'eose' | 'disconnected';
 
+// Small initial batch for fast first render; more loaded on scroll
+const INITIAL_LIMIT = 30;
+const FETCH_PAGE_SIZE = 25;
+
 class RelayManager {
   pool: SimplePool | null = null;
   private _sub: any = null;
@@ -40,11 +44,10 @@ class RelayManager {
     const urls = this.getUrls();
     const settings = getSettings();
     const since = Math.floor(Date.now() / 1000) - settings.timeWindow * 60 * 60;
-    const limit = settings.maxNotes;
 
     this._sub = this.pool.subscribe(
       urls,
-      { kinds: [1], since, limit } as any,
+      { kinds: [1], since, limit: INITIAL_LIMIT } as any,
       {
         onevent: (event: NostrEvent) => {
           this._onEvent?.(event);
@@ -60,6 +63,65 @@ class RelayManager {
     );
 
     this._onStatus?.('connected');
+  }
+
+  /**
+   * Fetch older notes for pagination. One-shot query — does not stay open.
+   * Uses `until` to page backward in time.
+   */
+  async fetchOlderNotes(
+    until: number,
+    limit: number = FETCH_PAGE_SIZE,
+    customSince?: number
+  ): Promise<NostrEvent[]> {
+    if (!this.pool) return [];
+
+    const urls = this.getUrls();
+    const settings = getSettings();
+    const since = customSince ?? Math.floor(Date.now() / 1000) - settings.timeWindow * 60 * 60;
+
+    try {
+      const events = await this.pool.querySync(
+        urls,
+        { kinds: [1], since, until, limit } as any
+      );
+      return events as NostrEvent[];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Fetch older notes from followed authors specifically.
+   */
+  async fetchOlderFollowingNotes(
+    pubkeys: string[],
+    until: number,
+    limit: number = FETCH_PAGE_SIZE,
+    customSince?: number
+  ): Promise<NostrEvent[]> {
+    if (!this.pool || pubkeys.length === 0) return [];
+
+    const urls = this.getUrls();
+    const settings = getSettings();
+    const since = customSince ?? Math.floor(Date.now() / 1000) - settings.timeWindow * 60 * 60;
+
+    try {
+      // Chunk pubkeys to avoid relay limits
+      const CHUNK = 150;
+      const allEvents: NostrEvent[] = [];
+      for (let i = 0; i < pubkeys.length; i += CHUNK) {
+        const chunk = pubkeys.slice(i, i + CHUNK);
+        const events = await this.pool.querySync(
+          urls,
+          { kinds: [1], authors: chunk, since, until, limit } as any
+        );
+        allEvents.push(...(events as NostrEvent[]));
+      }
+      return allEvents;
+    } catch {
+      return [];
+    }
   }
 
   reconnect(): void {

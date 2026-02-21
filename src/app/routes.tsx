@@ -8,6 +8,7 @@ import { Profile } from "./pages/Profile";
 import { Login } from "./pages/Login";
 import { Settings } from "./pages/Settings";
 import { NoteThread } from "./pages/NoteThread";
+import { Explore } from "./pages/Explore";
 
 export const router = createBrowserRouter([
   {
@@ -25,7 +26,7 @@ export const router = createBrowserRouter([
       { path: "create", Component: CreatePost },
       { path: "profile", Component: Profile },
       { path: "profile/:handle", Component: Profile },
-      { path: "explore", Component: Feed },
+      { path: "explore", Component: Explore },
       { path: "settings", Component: Settings },
     ],
   },

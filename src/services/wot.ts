@@ -1,5 +1,5 @@
 import type { TrustData } from '@/types/nostr';
-import { getSettings } from './settings';
+import { getSettings, setSetting } from './settings';
 import { Signer } from './signer';
 
 const WOT_ORACLE_URL = 'https://wot-oracle.mappingbitcoin.com';
@@ -8,6 +8,7 @@ class WoTService {
   cache = new Map<string, TrustData>();
   myPubkey: string | null = null;
   hasExtension = false;
+  extensionSettingsImported = false;
   private _methods: Record<string, boolean> = {};
 
   private _scoreFromDistance(d: number): number {
@@ -39,7 +40,74 @@ class WoTService {
       }
     }
 
+    // Import settings from the WoT extension if available
+    if (this.hasExtension && !this.extensionSettingsImported) {
+      await this._importExtensionSettings();
+    }
+
     return { hasExtension: this.hasExtension };
+  }
+
+  /**
+   * Try to import trust settings from the WoT browser extension.
+   * The extension may expose getSettings(), getConfig(), or individual getters.
+   * These override local defaults to keep the app in sync with the extension.
+   */
+  private async _importExtensionSettings(): Promise<void> {
+    const wot = (window as any).nostr?.wot;
+    if (!wot) return;
+
+    try {
+      // Try getSettings() or getConfig()
+      let extSettings: any = null;
+
+      if (typeof wot.getSettings === 'function') {
+        extSettings = await wot.getSettings();
+      } else if (typeof wot.getConfig === 'function') {
+        extSettings = await wot.getConfig();
+      }
+
+      if (extSettings && typeof extSettings === 'object') {
+        // Import maxHops / maxDistance
+        const maxHops = extSettings.maxHops ?? extSettings.maxDistance ?? extSettings.depth;
+        if (typeof maxHops === 'number' && maxHops > 0 && maxHops <= 10) {
+          setSetting('maxHops', maxHops);
+        }
+
+        // Import trust threshold
+        const threshold = extSettings.trustThreshold ?? extSettings.minTrust ?? extSettings.threshold;
+        if (typeof threshold === 'number' && threshold >= 0 && threshold <= 100) {
+          setSetting('trustThreshold', threshold);
+        }
+
+        // Import relays if the extension provides them
+        const relays = extSettings.relays ?? extSettings.relayUrls;
+        if (Array.isArray(relays) && relays.length > 0 && relays.every((r: any) => typeof r === 'string' && r.startsWith('wss://'))) {
+          setSetting('relays', relays);
+        }
+
+        this.extensionSettingsImported = true;
+        return;
+      }
+    } catch {
+      // getSettings not supported or failed
+    }
+
+    // Fallback: try individual getters
+    try {
+      if (typeof wot.getMaxHops === 'function') {
+        const h = await wot.getMaxHops();
+        if (typeof h === 'number' && h > 0) setSetting('maxHops', h);
+      }
+      if (typeof wot.getMaxDistance === 'function') {
+        const d = await wot.getMaxDistance();
+        if (typeof d === 'number' && d > 0) setSetting('maxHops', d);
+      }
+    } catch {
+      // individual getters not supported
+    }
+
+    this.extensionSettingsImported = true;
   }
 
   async scoreSingle(pubkey: string): Promise<TrustData> {
