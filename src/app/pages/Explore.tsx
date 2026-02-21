@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router';
+import { useSearchParams } from 'react-router';
 import { Search, Hash, Loader2, X, Image as ImageIcon } from 'lucide-react';
 import Masonry, { ResponsiveMasonry } from 'react-responsive-masonry';
 import { cn } from '@/lib/utils';
@@ -7,26 +7,30 @@ import { Relay } from '@/services/relay';
 import { Profiles } from '@/services/profiles';
 import { WoT } from '@/services/wot';
 import { parseContent } from '@/services/content';
-import { processEvent } from '@/services/feed';
+import { processEvent, filterNotes, sortNotes } from '@/services/feed';
 import { useFeedStore } from '@/stores/feedStore';
 import { useProfileStore } from '@/stores/profileStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { truncateNpub, trustColor } from '@/utils/helpers';
 import { nip19 } from 'nostr-tools';
 import { NotePost } from '@/app/components/NotePost';
 import type { Note, NostrEvent } from '@/types/nostr';
+import { useLightboxStore } from '@/stores/lightboxStore';
 
 const TRENDING_TAGS = ['bitcoin', 'nostr', 'zap', 'art', 'photography', 'music', 'dev'];
 const GRID_PAGE_SIZE = 30;
 
 export function Explore() {
-  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { updateTick } = useProfileStore();
+  const settings = useSettingsStore();
 
   // Search state
   const [query, setQuery] = useState('');
   const [searchType, setSearchType] = useState<'none' | 'hashtag' | 'profile'>('none');
   const [searchResults, setSearchResults] = useState<Note[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
+  const initialSearchDone = useRef(false);
 
   // Media grid state — derived from feedStore
   const notes = useFeedStore((s) => s.notes);
@@ -78,6 +82,21 @@ export function Explore() {
     return () => observer.disconnect();
   }, [searchType]);
 
+  // Auto-search from URL query param (e.g. /explore?q=%23bitcoin)
+  useEffect(() => {
+    if (initialSearchDone.current) return;
+    const q = searchParams.get('q');
+    if (q) {
+      initialSearchDone.current = true;
+      setQuery(q);
+      if (q.startsWith('#') && q.length > 1) {
+        searchByHashtag(q.slice(1));
+      }
+      // Clear the param so back navigation doesn't re-trigger
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams]);
+
   // Search handlers
   const handleSearch = useCallback(() => {
     const trimmed = query.trim();
@@ -117,22 +136,30 @@ export function Explore() {
     try {
       const events = await pool.querySync(
         Relay.getUrls(),
-        { kinds: [1], '#t': [tag.toLowerCase()], limit: 50 } as any
+        { kinds: [1], '#t': [tag.toLowerCase()], limit: 100 } as any
       );
 
+      // Score all authors first so processEvent picks up trust data
+      const pubkeys = [...new Set((events as NostrEvent[]).map((ev) => ev.pubkey))];
+      if (pubkeys.length > 0) {
+        await WoT.scoreBatch(pubkeys);
+      }
+
+      // Now process events (trust scores are in cache)
       const resultNotes = (events as NostrEvent[]).map((ev) => {
         Profiles.request(ev.pubkey);
         return processEvent(ev);
       });
 
-      // Score authors
-      const pubkeys = [...new Set(resultNotes.map((n) => n.pubkey))];
-      if (pubkeys.length > 0) {
-        await WoT.scoreBatch(pubkeys);
-      }
+      // Filter by WoT settings and sort by trust
+      const filtered = filterNotes(resultNotes, {
+        trustedOnly: settings.trustedOnly,
+        maxHops: settings.maxHops,
+        trustThreshold: settings.trustThreshold,
+      });
+      const sorted = sortNotes(filtered, settings.sortMode);
 
-      resultNotes.sort((a, b) => b.created_at - a.created_at);
-      setSearchResults(resultNotes);
+      setSearchResults(sorted);
     } catch {
       // search failed silently
     }
@@ -171,7 +198,7 @@ export function Explore() {
     setSearchResults([]);
 
     Profiles.request(pubkey);
-    WoT.scoreBatch([pubkey]);
+    await WoT.scoreBatch([pubkey]);
 
     const pool = Relay.pool;
     if (!pool) { setSearchLoading(false); return; }
@@ -183,6 +210,7 @@ export function Explore() {
       );
 
       const resultNotes = (events as NostrEvent[]).map((ev) => processEvent(ev));
+      // Profile search: sort newest first (single author, trust is the same)
       resultNotes.sort((a, b) => b.created_at - a.created_at);
       setSearchResults(resultNotes);
     } catch {
@@ -303,18 +331,21 @@ export function Explore() {
 }
 
 function MediaGridItem({ note }: { note: Note }) {
-  const navigate = useNavigate();
   const { updateTick } = useProfileStore();
+  const openLightbox = useLightboxStore((s) => s.open);
   const profile = Profiles.get(note.pubkey);
   const parsed = parseContent(note.content);
-  const firstImage = parsed.find((p) => p.type === 'image');
+  const allImages = parsed.filter((p) => p.type === 'image');
+  const firstImage = allImages[0];
   if (!firstImage) return null;
+
+  const lightboxItems = allImages.map((img) => ({ type: 'image' as const, src: img.value }));
 
   return (
     <div
       className="relative group cursor-pointer rounded-lg overflow-hidden"
-      style={{ animation: 'note-enter 0.4s ease-out both' }}
-      onClick={() => navigate(`/note/${note.id}`)}
+      style={{ animation: 'note-enter 0.4s ease-out both', cursor: 'zoom-in' }}
+      onClick={() => openLightbox(lightboxItems, 0)}
     >
       <img
         src={firstImage.value}

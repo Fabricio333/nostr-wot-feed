@@ -64,7 +64,7 @@ export interface Settings {
 
 export type SortMode = 'trust-desc' | 'trust-asc' | 'newest' | 'oldest' | 'random';
 
-export type SignerBackend = 'nip07' | 'nip46' | 'readonly' | null;
+export type SignerBackend = 'nip07' | 'nip46' | 'nsec' | 'readonly' | null;
 
 export interface ContentToken {
   start: number;
@@ -85,6 +85,21 @@ export interface DMMessage {
   fromMe: boolean;
   content: string;
   timestamp: number;
+}
+
+export interface TrendingHashtag {
+  tag: string;
+  count: number;
+}
+
+export interface TrendingPost {
+  id: string;
+  pubkey: string;
+  content: string;
+  created_at: number;
+  reactionCount: number;
+  replyCount: number;
+  totalInteractions: number;
 }
 
 export type MediaType = 'image' | 'video' | 'youtube' | 'vimeo' | 'link';

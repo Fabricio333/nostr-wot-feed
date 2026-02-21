@@ -1,5 +1,5 @@
 import { Signer, generateClientSecret } from './signer';
-import { bytesToHex } from '@/utils/helpers';
+import { bytesToHex, hexToBytes } from '@/utils/helpers';
 import type { SignerBackend } from '@/types/nostr';
 
 const AUTH_KEY = 'wot-feed-auth';
@@ -8,6 +8,7 @@ interface AuthSession {
   method: SignerBackend;
   bunkerInput?: string;
   clientSecret?: string;
+  secretHex?: string;
 }
 
 export function saveSession(data: AuthSession): void {
@@ -59,6 +60,12 @@ export async function tryRestoreSession(): Promise<{
       return { success: true, method: 'nip46' };
     }
 
+    if (saved.method === 'nsec' && saved.secretHex) {
+      const secretBytes = hexToBytes(saved.secretHex);
+      await Signer.initNsec(secretBytes);
+      return { success: true, method: 'nsec' };
+    }
+
     if (saved.method === 'readonly') {
       Signer.setReadOnly();
       return { success: true, method: 'readonly' };
@@ -86,6 +93,13 @@ export async function loginWithBunker(input: string): Promise<string> {
     bunkerInput: input,
     clientSecret: secretHex,
   });
+  return pubkey;
+}
+
+export async function loginWithNsec(secretKey: Uint8Array): Promise<string> {
+  const pubkey = await Signer.initNsec(secretKey);
+  const secretHex = bytesToHex(secretKey);
+  saveSession({ method: 'nsec', secretHex });
   return pubkey;
 }
 

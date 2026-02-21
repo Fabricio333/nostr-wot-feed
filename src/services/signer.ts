@@ -22,6 +22,7 @@ class SignerService {
   private _backend: SignerBackend = null;
   private _pubkey: string | null = null;
   private _bunkerSigner: any = null;
+  private _secretKey: Uint8Array | null = null;
 
   isLoggedIn(): boolean {
     return this._backend !== null;
@@ -61,6 +62,14 @@ class SignerService {
     return this.initNip46(savedInput, secretBytes);
   }
 
+  async initNsec(secretKey: Uint8Array): Promise<string> {
+    const pure = await import('nostr-tools/pure');
+    this._secretKey = secretKey;
+    this._pubkey = pure.getPublicKey(secretKey);
+    this._backend = 'nsec';
+    return this._pubkey;
+  }
+
   setReadOnly(): void {
     this._backend = 'readonly';
     this._pubkey = null;
@@ -82,6 +91,10 @@ class SignerService {
     if (this._backend === 'nip46' && this._bunkerSigner) {
       return this._bunkerSigner.signEvent(event);
     }
+    if (this._backend === 'nsec' && this._secretKey) {
+      const { finalizeEvent } = await import('nostr-tools/pure');
+      return finalizeEvent(event, this._secretKey) as unknown as NostrEvent;
+    }
     throw new Error('No signer available');
   }
 
@@ -94,6 +107,7 @@ class SignerService {
       }
       this._bunkerSigner = null;
     }
+    this._secretKey = null;
     this._backend = null;
     this._pubkey = null;
   }
@@ -108,5 +122,15 @@ export async function generateClientSecret(): Promise<{
   await loadNip46();
   const secretKey = generateSecretKey();
   const publicKey = getPublicKeyFromSecret(secretKey);
+  return { secretKey, publicKey };
+}
+
+export async function generateNewKeypair(): Promise<{
+  secretKey: Uint8Array;
+  publicKey: string;
+}> {
+  const pure = await import('nostr-tools/pure');
+  const secretKey = pure.generateSecretKey();
+  const publicKey = pure.getPublicKey(secretKey);
   return { secretKey, publicKey };
 }

@@ -15,6 +15,8 @@ import { nip19 } from 'nostr-tools';
 import type { NostrEvent, ParsedContent } from '@/types/nostr';
 import { cn } from '@/lib/utils';
 import { FollowListDialog } from '@/app/components/FollowListDialog';
+import { ClickableMedia } from '@/app/components/ClickableMedia';
+import { useLightboxStore } from '@/stores/lightboxStore';
 
 export function Profile() {
   const { handle } = useParams();
@@ -174,11 +176,13 @@ export function Profile() {
       <div className="relative">
         {/* Cover Image */}
         {profile?.banner ? (
-          <img
-            src={profile.banner}
-            alt="Banner"
-            className="h-32 md:h-48 w-full object-cover"
-          />
+          <ClickableMedia items={[{ type: 'image', src: profile.banner }]} index={0}>
+            <img
+              src={profile.banner}
+              alt="Banner"
+              className="h-32 md:h-48 w-full object-cover"
+            />
+          </ClickableMedia>
         ) : (
           <div
             className="h-32 md:h-48"
@@ -189,15 +193,22 @@ export function Profile() {
         {/* Profile Info */}
         <div className="px-4">
           <div className="relative -mt-16 mb-4 flex justify-between items-end">
-            <div className="w-32 h-32 rounded-full border-4 border-black overflow-hidden bg-zinc-800 flex items-center justify-center"
-              style={!profile?.picture ? { backgroundColor: fallbackColor } : undefined}
-            >
-              {profile?.picture ? (
+            {profile?.picture ? (
+              <ClickableMedia
+                items={[{ type: 'image', src: profile.picture }]}
+                index={0}
+                className="w-32 h-32 rounded-full border-4 border-black overflow-hidden bg-zinc-800"
+              >
                 <img src={profile.picture} alt={displayName} className="w-full h-full object-cover" />
-              ) : (
+              </ClickableMedia>
+            ) : (
+              <div
+                className="w-32 h-32 rounded-full border-4 border-black overflow-hidden bg-zinc-800 flex items-center justify-center"
+                style={{ backgroundColor: fallbackColor }}
+              >
                 <User size={48} className="text-white/60" />
-              )}
-            </div>
+              </div>
+            )}
             <div className="flex gap-2">
               {isOwnProfile ? (
                 <button className="px-4 py-2 bg-transparent border border-zinc-600 rounded-full font-bold hover:bg-zinc-900 transition-colors">
@@ -439,7 +450,12 @@ function ProfileNote({ note }: { note: NostrEvent }) {
         </div>
         {images.length > 0 && (
           <div className="mt-2 rounded-xl overflow-hidden">
-            <img src={images[0].value} alt="" className="w-full max-h-64 object-cover" loading="lazy" />
+            <ClickableMedia
+              items={images.map((img) => ({ type: 'image' as const, src: img.value }))}
+              index={0}
+            >
+              <img src={images[0].value} alt="" className="w-full max-h-64 object-cover" loading="lazy" />
+            </ClickableMedia>
           </div>
         )}
       </article>

@@ -5,6 +5,7 @@ import {
   tryRestoreSession,
   loginWithExtension,
   loginWithBunker,
+  loginWithNsec,
   loginReadOnly,
   logout as authLogout,
   detectExtension,
@@ -22,6 +23,7 @@ interface AuthStore {
   initialize: () => Promise<void>;
   loginExtension: () => Promise<void>;
   loginBunker: (input: string) => Promise<void>;
+  loginNsec: (secretKey: Uint8Array) => Promise<void>;
   loginReadOnly: () => Promise<void>;
   logout: () => Promise<void>;
   clearError: () => void;
@@ -83,6 +85,22 @@ export const useAuthStore = create<AuthStore>((set) => ({
         isLoggedIn: true,
         isReadOnly: false,
         backend: 'nip46',
+        pubkey,
+        loading: false,
+      });
+    } catch (e: any) {
+      set({ error: e.message, loading: false });
+    }
+  },
+
+  loginNsec: async (secretKey: Uint8Array) => {
+    set({ loading: true, error: null });
+    try {
+      const pubkey = await loginWithNsec(secretKey);
+      set({
+        isLoggedIn: true,
+        isReadOnly: false,
+        backend: 'nsec',
         pubkey,
         loading: false,
       });

@@ -1,7 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
 import { useAuthStore } from '@/stores/authStore';
-import { Key, Globe, Eye, Loader2, Shield, MessageCircle, Radio, Lock } from 'lucide-react';
+import { generateNewKeypair } from '@/services/signer';
+import { nip19 } from 'nostr-tools';
+import {
+  Key, Globe, Eye, Loader2, Shield, MessageCircle, Radio, Lock,
+  UserPlus, Copy, Check, Download, AlertTriangle, ArrowLeft,
+} from 'lucide-react';
+
+type CreateStep = 'warning' | 'keys' | null;
+
+function downloadFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
 export function Login() {
   const navigate = useNavigate();
@@ -13,12 +32,29 @@ export function Login() {
     initialize,
     loginExtension,
     loginBunker,
+    loginNsec,
     loginReadOnly,
     clearError,
   } = useAuthStore();
 
   const [bunkerUrl, setBunkerUrl] = useState('');
   const [showBunker, setShowBunker] = useState(false);
+
+  // Create account wizard state
+  const [createStep, setCreateStep] = useState<CreateStep>(null);
+  const [keypair, setKeypair] = useState<{ secretKey: Uint8Array; publicKey: string } | null>(null);
+  const [nsecStr, setNsecStr] = useState('');
+  const [npubStr, setNpubStr] = useState('');
+  const [copiedNsec, setCopiedNsec] = useState(false);
+  const [copiedNpub, setCopiedNpub] = useState(false);
+  const [backedUp, setBackedUp] = useState(false);
+
+  // Encrypted backup state
+  const [showEncrypt, setShowEncrypt] = useState(false);
+  const [encPassword, setEncPassword] = useState('');
+  const [encConfirm, setEncConfirm] = useState('');
+  const [encrypting, setEncrypting] = useState(false);
+  const [encError, setEncError] = useState('');
 
   useEffect(() => {
     initialize();
@@ -30,10 +66,268 @@ export function Login() {
     }
   }, [isLoggedIn, loading, navigate]);
 
+  const handleGenerateKeys = async () => {
+    const kp = await generateNewKeypair();
+    setKeypair(kp);
+    setNsecStr(nip19.nsecEncode(kp.secretKey));
+    setNpubStr(nip19.npubEncode(kp.publicKey));
+    setCreateStep('keys');
+  };
+
+  const handleCopy = async (text: string, which: 'nsec' | 'npub') => {
+    await navigator.clipboard.writeText(text);
+    if (which === 'nsec') {
+      setCopiedNsec(true);
+      setBackedUp(true);
+      setTimeout(() => setCopiedNsec(false), 2000);
+    } else {
+      setCopiedNpub(true);
+      setTimeout(() => setCopiedNpub(false), 2000);
+    }
+  };
+
+  const handleDownloadNsec = () => {
+    downloadFile('nostr-nsec-backup.txt', nsecStr);
+    setBackedUp(true);
+  };
+
+  const handleDownloadNcryptsec = async () => {
+    if (encPassword !== encConfirm) {
+      setEncError('Passwords do not match');
+      return;
+    }
+    if (encPassword.length < 8) {
+      setEncError('Password must be at least 8 characters');
+      return;
+    }
+    if (!keypair) return;
+
+    setEncrypting(true);
+    setEncError('');
+    try {
+      const nip49 = await import('nostr-tools/nip49');
+      const ncryptsec = nip49.encrypt(keypair.secretKey, encPassword);
+      downloadFile('nostr-ncryptsec-backup.txt', ncryptsec);
+      setBackedUp(true);
+      setShowEncrypt(false);
+    } catch (e: any) {
+      setEncError(e.message || 'Encryption failed');
+    } finally {
+      setEncrypting(false);
+    }
+  };
+
+  const handleContinueToApp = async () => {
+    if (!keypair) return;
+    await loginNsec(keypair.secretKey);
+  };
+
+  const handleCancelCreate = () => {
+    setCreateStep(null);
+    setKeypair(null);
+    setNsecStr('');
+    setNpubStr('');
+    setCopiedNsec(false);
+    setCopiedNpub(false);
+    setBackedUp(false);
+    setShowEncrypt(false);
+    setEncPassword('');
+    setEncConfirm('');
+    setEncError('');
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-screen bg-black">
         <Loader2 className="animate-spin text-purple-500" size={48} />
+      </div>
+    );
+  }
+
+  // Create Account — Step 1: Warning
+  if (createStep === 'warning') {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center px-4">
+        <div className="max-w-md w-full bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6 space-y-5">
+          <button
+            onClick={handleCancelCreate}
+            className="flex items-center gap-2 text-zinc-400 hover:text-white transition-colors text-sm"
+          >
+            <ArrowLeft size={16} />
+            Back to login
+          </button>
+
+          <div className="flex items-center justify-center">
+            <div className="w-14 h-14 rounded-full bg-amber-500/10 flex items-center justify-center">
+              <AlertTriangle size={28} className="text-amber-400" />
+            </div>
+          </div>
+
+          <h2 className="text-xl font-bold text-center">Create a New Nostr Identity</h2>
+
+          <div className="space-y-3 text-sm text-zinc-300 leading-relaxed">
+            <p>
+              Nostr uses <strong className="text-white">cryptographic keys</strong> instead of usernames and passwords. Your identity is a key pair:
+            </p>
+            <ul className="space-y-2 ml-1">
+              <li className="flex gap-2">
+                <span className="text-green-400 font-bold shrink-0">npub</span>
+                <span>— Your public key. Share it freely — it&apos;s your identity.</span>
+              </li>
+              <li className="flex gap-2">
+                <span className="text-red-400 font-bold shrink-0">nsec</span>
+                <span>— Your private key. <strong className="text-white">NEVER share it.</strong> Anyone with it controls your account.</span>
+              </li>
+            </ul>
+            <div className="bg-red-900/20 border border-red-800/50 rounded-lg p-3 text-red-300">
+              <strong>There is no password reset.</strong> If you lose your nsec, you lose access to this account forever. No one can recover it for you.
+            </div>
+            <p className="text-zinc-400">
+              You are solely responsible for backing up your key. We&apos;ll help you save it in the next step.
+            </p>
+          </div>
+
+          <button
+            onClick={handleGenerateKeys}
+            className="w-full bg-purple-600 hover:bg-purple-700 text-white py-3 px-6 rounded-xl font-semibold transition-colors"
+          >
+            I understand, generate my keys
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Create Account — Step 2: Key Display + Backup
+  if (createStep === 'keys' && keypair) {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center px-4 py-8">
+        <div className="max-w-md w-full bg-zinc-900/60 border border-zinc-800 rounded-2xl p-6 space-y-5">
+          <button
+            onClick={handleCancelCreate}
+            className="flex items-center gap-2 text-zinc-400 hover:text-white transition-colors text-sm"
+          >
+            <ArrowLeft size={16} />
+            Back to login
+          </button>
+
+          <h2 className="text-xl font-bold text-center">Your New Nostr Keys</h2>
+
+          {/* npub */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-green-400">Public Key (npub) — safe to share</label>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-xs font-mono text-zinc-300 break-all select-all">
+                {npubStr}
+              </code>
+              <button
+                onClick={() => handleCopy(npubStr, 'npub')}
+                className="shrink-0 p-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg transition-colors"
+                title="Copy npub"
+              >
+                {copiedNpub ? <Check size={16} className="text-green-400" /> : <Copy size={16} className="text-zinc-400" />}
+              </button>
+            </div>
+          </div>
+
+          {/* nsec */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-red-400">Private Key (nsec) — NEVER share</label>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 bg-zinc-800 border border-red-900/50 rounded-lg px-3 py-2 text-xs font-mono text-zinc-300 break-all select-all">
+                {nsecStr}
+              </code>
+              <button
+                onClick={() => handleCopy(nsecStr, 'nsec')}
+                className="shrink-0 p-2 bg-zinc-800 hover:bg-zinc-700 rounded-lg transition-colors"
+                title="Copy nsec"
+              >
+                {copiedNsec ? <Check size={16} className="text-green-400" /> : <Copy size={16} className="text-zinc-400" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Warning */}
+          <div className="bg-red-900/20 border border-red-800/50 rounded-lg p-3 text-red-300 text-sm">
+            If you lose your nsec, you lose access to this account forever. There is no recovery.
+          </div>
+
+          {/* Download buttons */}
+          <div className="space-y-3">
+            <button
+              onClick={handleDownloadNsec}
+              className="w-full flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-white py-2.5 px-4 rounded-xl font-semibold transition-colors"
+            >
+              <Download size={18} />
+              Download nsec (plaintext)
+            </button>
+
+            <button
+              onClick={() => setShowEncrypt(!showEncrypt)}
+              className="w-full flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-white py-2.5 px-4 rounded-xl font-semibold transition-colors"
+            >
+              <Lock size={18} />
+              Download encrypted backup (ncryptsec)
+            </button>
+
+            {showEncrypt && (
+              <div className="bg-zinc-800/50 border border-zinc-700 rounded-xl p-4 space-y-3">
+                <p className="text-xs text-zinc-400">
+                  Encrypt your key with a password (NIP-49). You&apos;ll need this password to decrypt it later.
+                </p>
+                <input
+                  type="password"
+                  placeholder="Password (min 8 characters)"
+                  value={encPassword}
+                  onChange={(e) => { setEncPassword(e.target.value); setEncError(''); }}
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm placeholder-zinc-500 focus:outline-none focus:border-purple-500"
+                />
+                <input
+                  type="password"
+                  placeholder="Confirm password"
+                  value={encConfirm}
+                  onChange={(e) => { setEncConfirm(e.target.value); setEncError(''); }}
+                  className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-white text-sm placeholder-zinc-500 focus:outline-none focus:border-purple-500"
+                />
+                {encError && (
+                  <p className="text-red-400 text-xs">{encError}</p>
+                )}
+                <button
+                  onClick={handleDownloadNcryptsec}
+                  disabled={encrypting || !encPassword || !encConfirm}
+                  className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-zinc-700 disabled:text-zinc-500 text-white py-2 px-4 rounded-lg font-semibold transition-colors text-sm flex items-center justify-center gap-2"
+                >
+                  {encrypting ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin" />
+                      Encrypting...
+                    </>
+                  ) : (
+                    <>
+                      <Download size={16} />
+                      Encrypt & Download
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Continue button */}
+          <button
+            onClick={handleContinueToApp}
+            disabled={!backedUp}
+            className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-zinc-800 disabled:text-zinc-500 text-white py-3 px-6 rounded-xl font-semibold transition-colors"
+          >
+            {backedUp ? 'Continue to app' : 'Back up your key first to continue'}
+          </button>
+
+          {!backedUp && (
+            <p className="text-xs text-zinc-500 text-center">
+              Copy or download your nsec to enable the continue button.
+            </p>
+          )}
+        </div>
       </div>
     );
   }
@@ -156,6 +450,15 @@ export function Login() {
                 </div>
               )}
             </div>
+
+            {/* Create New Account */}
+            <button
+              onClick={() => setCreateStep('warning')}
+              className="w-full flex items-center justify-center gap-3 bg-zinc-800 hover:bg-zinc-700 text-white py-3 px-6 rounded-xl font-semibold transition-colors"
+            >
+              <UserPlus size={20} />
+              Create New Account
+            </button>
 
             {/* Read-only Mode */}
             <button

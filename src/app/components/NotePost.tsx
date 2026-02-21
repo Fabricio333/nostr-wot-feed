@@ -11,6 +11,8 @@ import { Mute } from '@/services/mute';
 import { parseContent } from '@/services/content';
 import { timeAgo, truncateNpub, pubkeyColor, trustColor } from '@/utils/helpers';
 import type { Note, ParsedContent as ParsedContentType } from '@/types/nostr';
+import { ClickableMedia } from './ClickableMedia';
+import type { LightboxItem } from '@/stores/lightboxStore';
 
 export function NotePost({ note, parentTick }: { note: Note; parentTick: number }) {
   const navigate = useNavigate();
@@ -35,6 +37,11 @@ export function NotePost({ note, parentTick }: { note: Note; parentTick: number 
   const images = parsed.filter((p) => p.type === 'image');
   const videos = parsed.filter((p) => p.type === 'video');
   const youtubes = parsed.filter((p) => p.type === 'youtube');
+
+  const mediaItems: LightboxItem[] = [
+    ...images.slice(0, 4).map((img) => ({ type: 'image' as const, src: img.value })),
+    ...videos.map((vid) => ({ type: 'video' as const, src: vid.value })),
+  ];
 
   // Reply context
   const parentNote = note.replyTo ? ParentNotes.get(note.replyTo) : null;
@@ -155,13 +162,17 @@ export function NotePost({ note, parentTick }: { note: Note; parentTick: number 
           {images.length > 0 && (
             <div className={cn("mt-2 rounded-xl overflow-hidden", images.length > 1 ? "grid grid-cols-2 gap-0.5" : "")}>
               {images.slice(0, 4).map((img, idx) => (
-                <img key={idx} src={img.value} alt="" className="w-full max-h-96 object-cover" loading="lazy" />
+                <ClickableMedia key={idx} items={mediaItems} index={idx}>
+                  <img src={img.value} alt="" className="w-full max-h-96 object-cover" loading="lazy" />
+                </ClickableMedia>
               ))}
             </div>
           )}
           {videos.length > 0 && (
             <div className="mt-2 rounded-xl overflow-hidden">
-              <video src={videos[0].value} controls className="w-full max-h-96" preload="metadata" />
+              <ClickableMedia items={mediaItems} index={images.slice(0, 4).length}>
+                <video src={videos[0].value} className="w-full max-h-96" preload="metadata" />
+              </ClickableMedia>
             </div>
           )}
           {youtubes.length > 0 && youtubes[0].extra && (

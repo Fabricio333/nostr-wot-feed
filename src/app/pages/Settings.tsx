@@ -167,6 +167,7 @@ export function Settings() {
           </div>
           <SliderRow
             label="Max Hops"
+            description="How far in the social graph to look. 1 = only people you follow, 2 = friends of friends, etc."
             value={settings.maxHops}
             min={1}
             max={6}
@@ -176,6 +177,7 @@ export function Settings() {
           />
           <SliderRow
             label="Trust Weight"
+            description="How much trust score influences feed ranking vs recency."
             value={Math.round(settings.trustWeight * 100)}
             min={0}
             max={100}
@@ -185,6 +187,7 @@ export function Settings() {
           />
           <SliderRow
             label="Trust Threshold"
+            description="Minimum trust score (%) to show a note. Set to 0 to show all notes."
             value={settings.trustThreshold}
             min={0}
             max={100}
@@ -399,8 +402,9 @@ function NumberRow({ label, value, min, max, step, onChange }: {
   );
 }
 
-function SliderRow({ label, value, min, max, step, display, onChange }: {
+function SliderRow({ label, description, value, min, max, step, display, onChange }: {
   label: string;
+  description?: string;
   value: number;
   min: number;
   max: number;
@@ -414,6 +418,7 @@ function SliderRow({ label, value, min, max, step, display, onChange }: {
         <p className="text-sm text-zinc-200">{label}</p>
         <span className="text-sm text-purple-400 font-medium">{display}</span>
       </div>
+      {description && <p className="text-xs text-zinc-500 mb-1">{description}</p>}
       <input
         type="range"
         value={value}

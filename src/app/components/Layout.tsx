@@ -9,6 +9,7 @@ import { Profiles } from '@/services/profiles';
 import { loadSettings } from '@/services/settings';
 import { truncateNpub } from '@/utils/helpers';
 import { WoTLogo } from './WoTLogo';
+import { TrendingSidebar } from './TrendingSidebar';
 
 export function Layout() {
   const location = useLocation();
@@ -113,13 +114,8 @@ export function Layout() {
       </main>
 
       {/* Right Sidebar (Desktop only) */}
-      <aside className="hidden lg:block w-80 p-6 pl-8">
-        <div className="bg-zinc-900 rounded-xl p-4 mb-6">
-          <h3 className="font-bold mb-4 text-lg">Nostr WTF</h3>
-          <p className="text-zinc-400 text-sm">
-            Your feed is filtered by Web of Trust. Notes from people closer to you in the social graph are scored higher.
-          </p>
-        </div>
+      <aside className="hidden lg:block w-80 p-6 pl-8 overflow-y-auto no-scrollbar">
+        <TrendingSidebar />
       </aside>
 
       {/* Mobile Bottom Nav */}
