@@ -1,6 +1,7 @@
 import type { TrustData } from '@/types/nostr';
 import { getSettings, setSetting } from './settings';
 import { Signer } from './signer';
+import { REFERENCE_PUBKEY } from '@/constants/nostr';
 
 const WOT_ORACLE_URL = 'https://wot-oracle.mappingbitcoin.com';
 
@@ -38,6 +39,12 @@ class WoTService {
       } catch {
         // ignore
       }
+    }
+
+    // Fallback: use reference pubkey for guest/read-only mode so the WoT
+    // oracle can still provide trust scores anchored to a known graph.
+    if (!this.myPubkey) {
+      this.myPubkey = REFERENCE_PUBKEY;
     }
 
     // Import settings from the WoT extension if available

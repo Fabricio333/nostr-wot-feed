@@ -10,6 +10,7 @@ import {
   logout as authLogout,
   detectExtension,
 } from '@/services/auth';
+import { REFERENCE_PUBKEY } from '@/constants/nostr';
 
 interface AuthStore {
   isLoggedIn: boolean;
@@ -46,11 +47,12 @@ export const useAuthStore = create<AuthStore>((set) => ({
 
     const result = await tryRestoreSession();
     if (result.success) {
+      const isReadOnly = result.method === 'readonly';
       set({
         isLoggedIn: true,
-        isReadOnly: result.method === 'readonly',
+        isReadOnly,
         backend: result.method || null,
-        pubkey: Signer.getPubkey(),
+        pubkey: isReadOnly ? REFERENCE_PUBKEY : Signer.getPubkey(),
         loading: false,
       });
     } else {
@@ -115,7 +117,7 @@ export const useAuthStore = create<AuthStore>((set) => ({
       isLoggedIn: true,
       isReadOnly: true,
       backend: 'readonly',
-      pubkey: null,
+      pubkey: REFERENCE_PUBKEY,
       loading: false,
       error: null,
     });

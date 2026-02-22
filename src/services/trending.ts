@@ -68,12 +68,11 @@ class TrendingService {
         await WoT.scoreBatch(allPubkeys);
       }
 
-      // Only count hashtags/posts from WoT-trusted authors (if any trust data exists)
+      // Only count hashtags/posts from WoT-trusted authors within distance 3
       const trustedNotes = filteredNotes.filter((n) => {
         const trust = WoT.cache.get(n.pubkey);
-        // If no WoT data at all (no extension, no oracle), include everyone
-        if (!trust) return true;
-        return trust.trusted;
+        if (!trust) return false;
+        return trust.trusted && trust.distance <= 3;
       });
 
       // Use trusted notes for hashtags, fall back to all filtered if no trusted notes

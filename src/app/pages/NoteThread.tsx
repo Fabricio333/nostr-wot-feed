@@ -5,7 +5,8 @@ import { Relay } from '@/services/relay';
 import { Profiles } from '@/services/profiles';
 import { WoT } from '@/services/wot';
 import { ParentNotes } from '@/services/parentNotes';
-import { processEvent } from '@/services/feed';
+import { processEvent, filterNotes } from '@/services/feed';
+import { getSettings } from '@/services/settings';
 import { getReplyToId } from '@/utils/nip10';
 import { NotePost } from '@/app/components/NotePost';
 import { useFeedStore } from '@/stores/feedStore';
@@ -21,6 +22,7 @@ export function NoteThread() {
   const [replies, setReplies] = useState<Note[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingReplies, setLoadingReplies] = useState(true);
+  const [filteredCount, setFilteredCount] = useState(0);
   const [parentTick, setParentTick] = useState(0);
   const targetRef = useRef<HTMLDivElement>(null);
 
@@ -169,13 +171,28 @@ export function NoteThread() {
         return processEvent(ev);
       });
 
-      // Score authors
+      // Score authors and filter by WoT
       const pubkeys = [...new Set(replyNotes.map((n) => n.pubkey))];
       if (pubkeys.length > 0) {
-        WoT.scoreBatch(pubkeys);
+        await WoT.scoreBatch(pubkeys);
       }
 
-      setReplies(replyNotes);
+      // Re-process with trust data
+      const scoredReplies = replyNotes.map((note) => {
+        const trust = WoT.cache.get(note.pubkey);
+        if (!trust) return note;
+        return { ...note, trustScore: trust.score, distance: trust.distance, trusted: trust.trusted, paths: trust.paths };
+      });
+
+      const settings = getSettings();
+      const filtered = filterNotes(scoredReplies, {
+        trustedOnly: settings.trustedOnly,
+        maxHops: settings.maxHops,
+        trustThreshold: settings.trustThreshold,
+      });
+
+      setFilteredCount(scoredReplies.length - filtered.length);
+      setReplies(filtered);
     } catch {
       // ignore
     }
@@ -238,7 +255,7 @@ export function NoteThread() {
                 {loadingReplies
                   ? 'Loading replies...'
                   : replies.length > 0
-                  ? `${replies.length} repl${replies.length === 1 ? 'y' : 'ies'}`
+                  ? `${replies.length} repl${replies.length === 1 ? 'y' : 'ies'}${filteredCount > 0 ? ` (${filteredCount} filtered by WoT)` : ''}`
                   : 'No replies yet'}
               </span>
             </div>

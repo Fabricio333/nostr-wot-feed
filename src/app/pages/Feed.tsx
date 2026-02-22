@@ -31,16 +31,19 @@ export function Feed() {
     wotScoringDone,
     loadingMore,
     hasMoreNotes,
+    isScrolledDown,
     addEvent,
     setEose,
     setRelayStatus,
     setWotStatus,
     setFeedMode,
+    setIsScrolledDown,
     bumpFollowsTick,
     getFilteredNotes,
     loadMore,
     fetchMore,
     resetNewNotesSinceScroll,
+    revealNewNotes,
     pullRefresh,
     scoreAllNotes,
   } = useFeedStore();
@@ -49,7 +52,6 @@ export function Feed() {
   const { hasExtension: wotExtDetected } = useWoTStore();
   const [parentTick, setParentTick] = useState(0);
   const [relayTick, setRelayTick] = useState(0);
-  const [isScrolledDown, setIsScrolledDown] = useState(false);
   const initRef = React.useRef(false);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const throttleRef = useRef(false);
@@ -73,15 +75,17 @@ export function Feed() {
     scrollContainerRef.current = main;
 
     const onScroll = () => {
-      setIsScrolledDown(main.scrollTop > 300);
+      const scrolled = main.scrollTop > 300;
+      setIsScrolledDown(scrolled);
+      // When user scrolls back to top, reveal any queued notes
       if (main.scrollTop < 50) {
-        resetNewNotesSinceScroll();
+        revealNewNotes();
       }
     };
 
     main.addEventListener('scroll', onScroll, { passive: true });
     return () => main.removeEventListener('scroll', onScroll);
-  }, [resetNewNotesSinceScroll]);
+  }, [setIsScrolledDown, revealNewNotes]);
 
   // Pull-to-refresh
   const { pullDistance, isRefreshing, threshold: pullThreshold } = usePullToRefresh({
@@ -91,8 +95,8 @@ export function Feed() {
 
   const scrollToTop = useCallback(() => {
     scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
-    resetNewNotesSinceScroll();
-  }, [resetNewNotesSinceScroll]);
+    revealNewNotes();
+  }, [revealNewNotes]);
 
   // If no pubkey (read-only), default to global feed
   useEffect(() => {

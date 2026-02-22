@@ -123,6 +123,7 @@ export function TrendingSidebar() {
 }
 
 function TrendingPostCard({ post }: { post: TrendingPost }) {
+  const navigate = useNavigate();
   useProfileStore((s) => s.updateTick);
   const profile = Profiles.get(post.pubkey);
   const rawName = profile?.displayName || profile?.name || truncateNpub(post.pubkey);
@@ -137,7 +138,7 @@ function TrendingPostCard({ post }: { post: TrendingPost }) {
     : cleanContent;
 
   return (
-    <div className="px-2 py-1.5 rounded-lg hover:bg-zinc-800 transition-colors group cursor-pointer">
+    <div className="px-2 py-1.5 rounded-lg hover:bg-zinc-800 transition-colors group cursor-pointer" onClick={() => navigate(`/note/${post.id}`)}>
       {/* Author row */}
       <div className="flex items-center gap-1.5 mb-0.5">
         <div

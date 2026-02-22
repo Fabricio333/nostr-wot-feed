@@ -16,6 +16,13 @@ const BATCH_MIN_SIZE = 5; // flush when buffer reaches this size
 const MAX_LOOKBACK_DAYS = 30;
 
 // ── sessionStorage cache for seenIds ──
+// seenIds prevents duplicate notes across pagination, live events, and page
+// reloads within a single browser tab session. Uses sessionStorage (not
+// localStorage) so IDs clear when the tab closes—no stale data across sessions.
+// MAX_CACHED_IDS (5000) caps the Set size to prevent unbounded memory growth.
+// Persistence: saved on beforeunload + a 30-second interval as a safety net.
+// Dedup flow: addEvent() checks both the store's seenIds and the module-level
+// bufferSeenIds (used during initial batched streaming before EOSE).
 const SEEN_IDS_KEY = 'wot-feed-seen-ids';
 const MAX_CACHED_IDS = 5000;
 
@@ -135,6 +142,7 @@ interface FeedStore {
   loadingMore: boolean;
   hasMoreNotes: boolean;
   fetchCooldownUntil: number;
+  isScrolledDown: boolean;
 
   addEvent: (event: NostrEvent) => void;
   setEose: () => void;
@@ -145,6 +153,8 @@ interface FeedStore {
   loadMore: () => void;
   fetchMore: () => Promise<void>;
   resetNewNotesSinceScroll: () => void;
+  revealNewNotes: () => void;
+  setIsScrolledDown: (scrolled: boolean) => void;
   pullRefresh: () => Promise<void>;
   toggleBookmarks: () => void;
   scoreAllNotes: () => Promise<void>;
@@ -173,6 +183,7 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
   loadingMore: false,
   hasMoreNotes: true,
   fetchCooldownUntil: 0,
+  isScrolledDown: false,
 
   addEvent: (event: NostrEvent) => {
     const state = get();
@@ -210,8 +221,11 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
         seenIds: newSeenIds,
         authors: newAuthors,
         totalReceived: state.totalReceived + 1,
-        displayLimit: state.displayLimit + 1,
-        newNotesSinceScroll: state.newNotesSinceScroll + 1,
+        // When at the top, auto-expand so new notes appear immediately.
+        // When scrolled down, only bump the counter for the FAB.
+        ...(state.isScrolledDown
+          ? { newNotesSinceScroll: state.newNotesSinceScroll + 1 }
+          : { displayLimit: state.displayLimit + 1 }),
       } as any);
 
       // Background: score unknown pubkeys and update the note with trust data
@@ -415,6 +429,16 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
 
   resetNewNotesSinceScroll: () => set({ newNotesSinceScroll: 0 }),
 
+  revealNewNotes: () => {
+    const state = get();
+    set({
+      displayLimit: state.displayLimit + state.newNotesSinceScroll,
+      newNotesSinceScroll: 0,
+    });
+  },
+
+  setIsScrolledDown: (scrolled: boolean) => set({ isScrolledDown: scrolled }),
+
   pullRefresh: async () => {
     // Re-establish relay subscriptions to fetch fresh notes
     set({
@@ -527,7 +551,12 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
       return sortNotes(filtered, 'newest');
     }
 
-    // Global tab after scoring: apply trust-weighted shuffle with stable seed
+    // Global tab after scoring: respect sortMode setting
+    if (settings.sortMode && settings.sortMode !== 'trust-desc') {
+      return sortNotes(filtered, settings.sortMode);
+    }
+
+    // Default: trust-weighted shuffle with stable seed
     const rng = mulberry32(state.shuffleSeed);
     const shuffled = filtered.map((note) => ({
       note,
