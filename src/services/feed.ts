@@ -78,9 +78,15 @@ export function sortNotes(notes: Note[], mode: SortMode): Note[] {
         return a.combinedScore - b.combinedScore;
       });
     case 'newest':
-      return sorted.sort((a, b) => b.created_at - a.created_at);
+      return sorted.sort((a, b) => {
+        if (b.created_at !== a.created_at) return b.created_at - a.created_at;
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      });
     case 'oldest':
-      return sorted.sort((a, b) => a.created_at - b.created_at);
+      return sorted.sort((a, b) => {
+        if (a.created_at !== b.created_at) return a.created_at - b.created_at;
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      });
     case 'random':
       for (let i = sorted.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));

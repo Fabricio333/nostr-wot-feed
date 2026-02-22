@@ -8,6 +8,7 @@ interface TrendingStore {
   loading: boolean;
   lastUpdated: number;
   updateTick: number;
+  isServerData: boolean;
 
   initialize: () => void;
   refresh: () => Promise<void>;
@@ -19,6 +20,7 @@ export const useTrendingStore = create<TrendingStore>((set, get) => ({
   loading: true,
   lastUpdated: 0,
   updateTick: 0,
+  isServerData: false,
 
   initialize: () => {
     Trending.onUpdate = () => {
@@ -28,6 +30,7 @@ export const useTrendingStore = create<TrendingStore>((set, get) => ({
         loading: false,
         lastUpdated: Trending.lastFetchedAt,
         updateTick: get().updateTick + 1,
+        isServerData: Trending.isUsingServer,
       });
     };
 

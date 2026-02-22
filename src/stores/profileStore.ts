@@ -8,6 +8,7 @@ interface ProfileStore {
   getProfile: (pubkey: string) => Profile | null;
   requestProfile: (pubkey: string) => void;
   onProfilesUpdated: (pubkeys: string[]) => void;
+  syncFromService: () => void;
 }
 
 export const useProfileStore = create<ProfileStore>((set, get) => ({
@@ -29,5 +30,10 @@ export const useProfileStore = create<ProfileStore>((set, get) => ({
       if (p) profiles.set(pk, p);
     }
     set({ profiles, updateTick: get().updateTick + 1 });
+  },
+
+  /** Sync the store profiles map from the service cache (call after Profiles.init) */
+  syncFromService: () => {
+    set({ profiles: new Map(Profiles.cache) });
   },
 }));

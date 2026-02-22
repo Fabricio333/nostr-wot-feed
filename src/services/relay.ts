@@ -1,11 +1,12 @@
 import { SimplePool } from 'nostr-tools';
 import type { NostrEvent } from '@/types/nostr';
 import { getSettings, setSetting } from './settings';
+import { DB } from './db';
+import { RelayStats } from './relayStats';
 
 type RelayStatus = 'connected' | 'eose' | 'disconnected';
 
-// Small initial batch for fast first render; more loaded on scroll
-const INITIAL_LIMIT = 30;
+const INITIAL_LIMIT = 150;
 const FETCH_PAGE_SIZE = 25;
 
 class RelayManager {
@@ -14,11 +15,15 @@ class RelayManager {
   private _followSub: any = null;
   private _onEvent: ((event: NostrEvent) => void) | null = null;
   private _onStatus: ((status: RelayStatus) => void) | null = null;
+  private _eoseFired = false;
 
   // Per-relay connection tracking
   relayStatuses = new Map<string, boolean>();
   onRelayStatusChange: (() => void) | null = null;
   private _pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Subscription start time for latency tracking
+  private _subStartTime = 0;
 
   getUrls(): string[] {
     return getSettings().relays;
@@ -40,13 +45,11 @@ class RelayManager {
       if (statuses instanceof Map) {
         const urls = this.getUrls();
         const next = new Map<string, boolean>();
-        // Normalize URLs (pool may add trailing slash)
         for (const url of urls) {
           const withSlash = url.endsWith('/') ? url : url + '/';
           const found = statuses.get(url) ?? statuses.get(withSlash);
           next.set(url, found === true);
         }
-        // Only notify if something changed
         let changed = next.size !== this.relayStatuses.size;
         if (!changed) {
           for (const [k, v] of next) {
@@ -63,10 +66,8 @@ class RelayManager {
     }
   }
 
-  /** Start polling relay statuses every 3s */
   private _startStatusPolling(): void {
     this._stopStatusPolling();
-    // Initial check after short delay (relays need time to connect)
     setTimeout(() => this.refreshStatuses(), 1500);
     this._pollTimer = setInterval(() => this.refreshStatuses(), 3000);
   }
@@ -94,33 +95,62 @@ class RelayManager {
     if (!this.pool) {
       this.pool = new SimplePool();
     }
-    this.connect();
+    // connect is async but we don't need to block init on it —
+    // the subscription will be set up when the async work completes
+    this._doConnect();
     this._startStatusPolling();
   }
 
-  connect(): void {
+  /**
+   * Internal async connect — resolves DB lookup then subscribes.
+   * Not awaited from init() so the caller isn't blocked.
+   */
+  private async _doConnect(): Promise<void> {
     if (!this.pool) return;
 
-    const urls = this.getUrls();
+    const rawUrls = this.getUrls();
+    const urls = RelayStats.getPrioritizedUrls(rawUrls);
     const settings = getSettings();
-    const since = Math.floor(Date.now() / 1000) - settings.timeWindow * 60 * 60;
 
-    this._sub = this.pool.subscribe(
-      urls,
-      { kinds: [1], since, limit: INITIAL_LIMIT } as any,
-      {
-        onevent: (event: NostrEvent) => {
-          this._onEvent?.(event);
-        },
-        oneose: () => {
-          this._onStatus?.('eose');
-        },
-        onclose: () => {
-          this._onStatus?.('disconnected');
-          setTimeout(() => this.reconnect(), 3000);
-        },
-      }
-    );
+    // Smart since: use cached latest event timestamp with 60s overlap
+    let cachedLatest: number | null = null;
+    try {
+      cachedLatest = await DB.getLatestEventTimestamp();
+    } catch {
+      // DB not ready yet — use time window only
+    }
+    const timeWindowSince = Math.floor(Date.now() / 1000) - settings.timeWindow * 60 * 60;
+    const since = cachedLatest
+      ? Math.max(cachedLatest - 60, timeWindowSince)
+      : timeWindowSince;
+
+    this._eoseFired = false;
+    this._subStartTime = Date.now();
+
+    // pool.subscribe fires oneose once when ALL relays have sent EOSE
+    this._sub = this.pool.subscribe(urls, { kinds: [1], since, limit: INITIAL_LIMIT } as any, {
+      onevent: (event: NostrEvent) => {
+        this._onEvent?.(event);
+      },
+      oneose: () => {
+        if (this._eoseFired) return;
+        this._eoseFired = true;
+
+        // Record success for all connected relays
+        const elapsed = Date.now() - this._subStartTime;
+        for (const url of urls) {
+          RelayStats.recordSuccess(url, elapsed);
+        }
+
+        this._onStatus?.('eose');
+      },
+      onclose: (reasons?: string[]) => {
+        this._onStatus?.('disconnected');
+        // Reconnect with backoff based on first failing relay
+        const backoff = 3000;
+        setTimeout(() => this.reconnect(), backoff);
+      },
+    });
 
     this._onStatus?.('connected');
   }
@@ -136,17 +166,27 @@ class RelayManager {
   ): Promise<NostrEvent[]> {
     if (!this.pool) return [];
 
-    const urls = this.getUrls();
+    const rawUrls = this.getUrls();
+    const urls = RelayStats.getPrioritizedUrls(rawUrls);
     const settings = getSettings();
     const since = customSince ?? Math.floor(Date.now() / 1000) - settings.timeWindow * 60 * 60;
 
+    const startTime = Date.now();
     try {
       const events = await this.pool.querySync(
         urls,
         { kinds: [1], since, until, limit } as any
       );
+      // Record success for responsive relays
+      const elapsed = Date.now() - startTime;
+      for (const url of urls) {
+        RelayStats.recordSuccess(url, elapsed);
+      }
       return events as NostrEvent[];
     } catch {
+      for (const url of urls) {
+        RelayStats.recordFailure(url, 'querySync failed');
+      }
       return [];
     }
   }
@@ -162,7 +202,8 @@ class RelayManager {
   ): Promise<NostrEvent[]> {
     if (!this.pool || pubkeys.length === 0) return [];
 
-    const urls = this.getUrls();
+    const rawUrls = this.getUrls();
+    const urls = RelayStats.getPrioritizedUrls(rawUrls);
     const settings = getSettings();
     const since = customSince ?? Math.floor(Date.now() / 1000) - settings.timeWindow * 60 * 60;
 
@@ -189,11 +230,9 @@ class RelayManager {
       this._sub.close();
       this._sub = null;
     }
-    // Reset statuses — they'll be re-populated by polling
     this.relayStatuses.clear();
     this.onRelayStatusChange?.();
-    this.connect();
-    // Refresh after relays have time to reconnect
+    this._doConnect();
     setTimeout(() => this.refreshStatuses(), 2000);
   }
 
@@ -208,42 +247,54 @@ class RelayManager {
   ): Promise<void> {
     if (!this.pool || pubkeys.length === 0) return;
 
-    // Close previous following subscription
     if (this._followSub) {
       this._followSub.close();
       this._followSub = null;
     }
 
-    const urls = this.getUrls();
+    const rawUrls = this.getUrls();
+    const urls = RelayStats.getPrioritizedUrls(rawUrls);
 
-    // Chunk pubkeys to avoid relay filter limits (150 per filter)
+    const settings = getSettings();
+    const since = Math.floor(Date.now() / 1000) - settings.timeWindow * 60 * 60;
+
+    // For large follow lists, chunk pubkeys into separate filter objects
     const CHUNK = 150;
-    const filters: any[] = [];
-    for (let i = 0; i < pubkeys.length; i += CHUNK) {
-      filters.push({
-        kinds: [1],
-        authors: pubkeys.slice(i, i + CHUNK),
-        limit: 100,
+    if (pubkeys.length <= CHUNK) {
+      this._followSub = this.pool.subscribe(
+        urls,
+        { kinds: [1], authors: pubkeys, since, limit: 200 } as any,
+        {
+          onevent: (event: NostrEvent) => onEvent(event),
+          oneose: () => onEose?.(),
+        }
+      );
+    } else {
+      // For large follow lists, use subscribeMap to send chunked filters per relay
+      const filters: any[] = [];
+      for (let i = 0; i < pubkeys.length; i += CHUNK) {
+        filters.push({
+          kinds: [1],
+          authors: pubkeys.slice(i, i + CHUNK),
+          since,
+          limit: 200,
+        });
+      }
+      const requests = urls.flatMap((url) =>
+        filters.map((filter) => ({ url, filter }))
+      );
+
+      let eoseFired = false;
+      this._followSub = this.pool.subscribeMap(requests, {
+        onevent: (event: NostrEvent) => onEvent(event),
+        oneose: () => {
+          if (!eoseFired) {
+            eoseFired = true;
+            onEose?.();
+          }
+        },
       });
     }
-
-    // Use subscribeMap to send multiple filters per relay correctly
-    const requests = urls.flatMap((url) =>
-      filters.map((filter) => ({ url, filter }))
-    );
-
-    let eoseFired = false;
-    this._followSub = this.pool.subscribeMap(requests, {
-      onevent: (event: NostrEvent) => {
-        onEvent(event);
-      },
-      oneose: () => {
-        if (!eoseFired) {
-          eoseFired = true;
-          onEose?.();
-        }
-      },
-    });
   }
 
   /**

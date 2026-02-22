@@ -107,7 +107,11 @@ function NotePostInner({ note }: { note: Note }) {
   return (
     <article
       className="p-4 hover:bg-zinc-900/30 transition-colors cursor-pointer border-b border-zinc-800"
-      style={animate ? { animation: 'note-enter 0.35s ease-out both' } : undefined}
+      style={{
+        contentVisibility: 'auto',
+        containIntrinsicSize: '0 200px',
+        ...(animate ? { animation: 'note-enter 0.35s ease-out both' } : {}),
+      }}
       onClick={handleNoteClick}
     >
       <div className="flex gap-3">
@@ -131,7 +135,7 @@ function NotePostInner({ note }: { note: Note }) {
         </Link>
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between">
-            <div className="flex items-baseline gap-2 min-w-0 flex-wrap">
+            <div className="flex items-baseline gap-2 min-w-0 flex-wrap h-5 overflow-hidden">
               <Link
                 to={`/profile/${note.pubkey}`}
                 className="font-bold hover:underline truncate text-white"

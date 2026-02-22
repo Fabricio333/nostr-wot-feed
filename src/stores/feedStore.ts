@@ -8,45 +8,20 @@ import { Relay } from '@/services/relay';
 import { processEvent, filterNotes, sortNotes } from '@/services/feed';
 import { Bookmarks } from '@/services/bookmarks';
 import { getSettings } from '@/services/settings';
+import { DB } from '@/services/db';
+import { EventBuffer, type FlushReason } from '@/services/eventBuffer';
 
 const PAGE_SIZE = 20;
 const FETCH_COOLDOWN_MS = 2000;
-const BATCH_FLUSH_INTERVAL = 150; // ms between batch flushes
-const BATCH_MIN_SIZE = 5; // flush when buffer reaches this size
 const MAX_LOOKBACK_DAYS = 30;
 
-// ── sessionStorage cache for seenIds ──
-// seenIds prevents duplicate notes across pagination, live events, and page
-// reloads within a single browser tab session. Uses sessionStorage (not
-// localStorage) so IDs clear when the tab closes—no stale data across sessions.
-// MAX_CACHED_IDS (5000) caps the Set size to prevent unbounded memory growth.
-// Persistence: saved on beforeunload + a 30-second interval as a safety net.
-// Dedup flow: addEvent() checks both the store's seenIds and the module-level
-// bufferSeenIds (used during initial batched streaming before EOSE).
-const SEEN_IDS_KEY = 'wot-feed-seen-ids';
-const MAX_CACHED_IDS = 5000;
-
-function loadCachedSeenIds(): Set<string> {
-  try {
-    const raw = sessionStorage.getItem(SEEN_IDS_KEY);
-    if (raw) {
-      const arr = JSON.parse(raw) as string[];
-      return new Set(arr.slice(-MAX_CACHED_IDS));
-    }
-  } catch { /* ignore */ }
-  return new Set();
-}
-
-function saveCachedSeenIds(ids: Set<string>): void {
-  try {
-    const arr = [...ids].slice(-MAX_CACHED_IDS);
-    sessionStorage.setItem(SEEN_IDS_KEY, JSON.stringify(arr));
-  } catch { /* quota exceeded */ }
-}
-
-// sessionStorage save listeners are set up after the store is created (bottom of file)
-
 export type FeedMode = 'following' | 'global';
+
+// Track which pubkeys came from following subscription so we can tag DB writes correctly
+const _followingPubkeys = new Set<string>();
+export function markFollowingPubkeys(pubkeys: string[]): void {
+  for (const pk of pubkeys) _followingPubkeys.add(pk);
+}
 
 // ── Module-level animation tracking ──
 // Each note only animates its entry once. Prevents replay on re-sort or re-mount.
@@ -69,46 +44,45 @@ export function shouldAnimate(noteId: string): boolean {
 let _filteredCache: Note[] | null = null;
 let _filteredCacheKey = '';
 
-// ── Module-level event batching ──
-// During initial streaming (before EOSE), events are batched so the UI
-// renders in groups of ~10 instead of one-by-one.
-let eventBuffer: NostrEvent[] = [];
-let bufferSeenIds = new Set<string>();
-let flushTimer: ReturnType<typeof setTimeout> | null = null;
-
-function scheduleFlush() {
-  if (eventBuffer.length >= BATCH_MIN_SIZE) {
-    if (flushTimer) clearTimeout(flushTimer);
-    flushEventBuffer();
-  } else if (!flushTimer) {
-    flushTimer = setTimeout(flushEventBuffer, BATCH_FLUSH_INTERVAL);
-  }
-}
-
-function flushEventBuffer() {
-  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
-  if (eventBuffer.length === 0) return;
-
-  const events = eventBuffer;
-  eventBuffer = [];
+// ── EventBuffer flush handler ──
+// Called synchronously by EventBuffer on flush triggers.
+// Processes events and merges into store immediately (verification is optional and async-safe).
+function handleBufferFlush(events: NostrEvent[], _reason: FlushReason): void {
+  if (events.length === 0) return;
 
   const state = useFeedStore.getState();
   const newNotes = [...state.notes];
   const newNotesById = new Map(state.notesById);
   const newSeenIds = new Set(state.seenIds);
   const newAuthors = new Set(state.authors);
-
-  // Merge buffer dedup set into store
-  for (const id of bufferSeenIds) newSeenIds.add(id);
-  bufferSeenIds = new Set();
+  const newIds: string[] = [];
 
   for (const event of events) {
+    if (newSeenIds.has(event.id)) continue;
+    newSeenIds.add(event.id);
+    newIds.push(event.id);
     newAuthors.add(event.pubkey);
     Profiles.request(event.pubkey);
+
     const note = processEvent(event);
     if (note.replyTo) ParentNotes.request(note.replyTo);
     newNotes.push(note);
     newNotesById.set(note.id, note);
+  }
+
+  if (newIds.length === 0) return;
+
+  // Persist to IndexedDB in background (safe — no-ops if DB not ready)
+  try {
+    DB.addSeenIds(newIds);
+    DB.queueEventWrite(events.filter(e => newIds.includes(e.id)).map(e => ({
+      id: e.id, pubkey: e.pubkey, kind: e.kind, created_at: e.created_at,
+      content: e.content, tags: e.tags, sig: e.sig,
+      feedType: _followingPubkeys.has(e.pubkey) ? 'following' as const : 'global' as const,
+      storedAt: Math.floor(Date.now() / 1000),
+    })));
+  } catch {
+    // DB not initialized yet — skip persistence, events are in memory
   }
 
   const maxNotes = getSettings().maxNotes;
@@ -187,7 +161,7 @@ interface FeedStore {
 export const useFeedStore = create<FeedStore>((set, get) => ({
   notes: [],
   notesById: new Map(),
-  seenIds: loadCachedSeenIds(),
+  seenIds: new Set<string>(),
   authors: new Set(),
   totalReceived: 0,
   displayLimit: PAGE_SIZE,
@@ -210,8 +184,8 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
 
   addEvent: (event: NostrEvent) => {
     const state = get();
-    // Dedup against both store and batch buffer
-    if (state.seenIds.has(event.id) || bufferSeenIds.has(event.id)) return;
+    // Dedup against both store and event buffer
+    if (state.seenIds.has(event.id) || EventBuffer.hasSeen(event.id)) return;
 
     // After initial render, insert new notes directly into the feed
     if (state.initialRenderDone) {
@@ -220,6 +194,19 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
       const newAuthors = new Set(state.authors);
       newAuthors.add(event.pubkey);
       Profiles.request(event.pubkey);
+
+      // Persist to IndexedDB in background (safe — no-ops if DB not ready)
+      try {
+        DB.addSeenIds([event.id]);
+        DB.queueEventWrite([{
+          id: event.id, pubkey: event.pubkey, kind: event.kind, created_at: event.created_at,
+          content: event.content, tags: event.tags, sig: event.sig,
+          feedType: _followingPubkeys.has(event.pubkey) ? 'following' as const : 'global' as const,
+          storedAt: Math.floor(Date.now() / 1000),
+        }]);
+      } catch {
+        // DB not initialized yet
+      }
 
       const note = processEvent(event);
       if (note.replyTo) ParentNotes.request(note.replyTo);
@@ -288,15 +275,13 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
       return;
     }
 
-    // During initial streaming: batch events for group rendering
-    bufferSeenIds.add(event.id);
-    eventBuffer.push(event);
-    scheduleFlush();
+    // During initial streaming: add to EventBuffer for batched rendering
+    EventBuffer.add(event);
   },
 
   setEose: () => {
-    // Flush any remaining batched events before marking EOSE
-    flushEventBuffer();
+    // Flush remaining buffered events and stop the buffer (events go direct after EOSE)
+    EventBuffer.flushAndStop();
     set({
       eoseReceived: true,
       initialRenderDone: true,
@@ -324,7 +309,8 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
   },
 
   /**
-   * Fetch older notes from relays. Throttled to avoid relay saturation.
+   * Fetch older notes. Checks IndexedDB cache first, then falls back to relays.
+   * Throttled to avoid relay saturation.
    */
   fetchMore: async () => {
     const state = get();
@@ -347,7 +333,49 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
       return;
     }
 
-    // Fetch from relay based on feed mode
+    // Step 1: Try IndexedDB cache first
+    const feedType = state.feedMode === 'following' ? 'following' as const : 'global' as const;
+    try {
+      const cachedEvents = await DB.getEventsByFeed(feedType, 25, oldest);
+      if (cachedEvents.length > 0) {
+        const current = get();
+        const newNotes = [...current.notes];
+        const newNotesById = new Map(current.notesById);
+        const newSeenIds = new Set(current.seenIds);
+        const newAuthors = new Set(current.authors);
+        let addedCount = 0;
+
+        for (const cached of cachedEvents) {
+          if (newSeenIds.has(cached.id)) continue;
+          newSeenIds.add(cached.id);
+          newAuthors.add(cached.pubkey);
+          Profiles.request(cached.pubkey);
+
+          const event: NostrEvent = {
+            id: cached.id, pubkey: cached.pubkey, kind: cached.kind,
+            created_at: cached.created_at, content: cached.content,
+            tags: cached.tags, sig: cached.sig,
+          };
+          const note = processEvent(event);
+          if (note.replyTo) ParentNotes.request(note.replyTo);
+          newNotes.push(note);
+          newNotesById.set(note.id, note);
+          addedCount++;
+        }
+
+        if (addedCount > 0) {
+          set({
+            notes: newNotes, notesById: newNotesById, seenIds: newSeenIds,
+            authors: newAuthors, loadingMore: false, hasMoreNotes: true,
+          } as any);
+          return;
+        }
+      }
+    } catch {
+      // IndexedDB read failed, fall through to relay
+    }
+
+    // Step 2: Fetch from relays
     let events: NostrEvent[];
     if (state.feedMode === 'following') {
       const pubkeys = Array.from(Follows.following);
@@ -413,6 +441,14 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
       // Don't bump displayLimit — let loadMore reveal them via scroll
     } as any);
 
+    // Persist fetched events to IndexedDB for cache-first pagination
+    DB.addSeenIds(events.filter(e => !state.seenIds.has(e.id)).map(e => e.id));
+    DB.queueEventWrite(events.filter(e => !state.seenIds.has(e.id)).map(e => ({
+      id: e.id, pubkey: e.pubkey, kind: e.kind, created_at: e.created_at,
+      content: e.content, tags: e.tags, sig: e.sig,
+      feedType, storedAt: Math.floor(Date.now() / 1000),
+    })));
+
     // Background: score new authors that aren't cached yet
     const unscoredPubkeys = [...new Set(events.map((e) => e.pubkey))].filter(
       (p) => !WoT.cache.has(p)
@@ -467,6 +503,7 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
     animatedNoteIds.clear();
     _filteredCache = null;
     _filteredCacheKey = '';
+    EventBuffer.reset();
     set({
       initialRenderDone: false,
       eoseReceived: false,
@@ -644,12 +681,82 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
   },
 }));
 
-// Persist seenIds to sessionStorage
+// ── Cache-first startup ──
+// Load cached events from IndexedDB for instant render before relay connects.
+export async function loadCachedFeed(feedMode: FeedMode): Promise<void> {
+  const feedType = feedMode === 'following' ? 'following' as const : 'global' as const;
+  try {
+    let cachedEvents = await DB.getEventsByFeed(feedType, 30);
+    // If following cache is empty, try global cache (following notes may be stored there)
+    if (cachedEvents.length === 0 && feedMode === 'following') {
+      cachedEvents = await DB.getEventsByFeed('global', 30);
+    }
+    if (cachedEvents.length === 0) return;
+
+    const state = useFeedStore.getState();
+    const newNotes = [...state.notes];
+    const newNotesById = new Map(state.notesById);
+    const newSeenIds = new Set(state.seenIds);
+    const newAuthors = new Set(state.authors);
+
+    for (const cached of cachedEvents) {
+      if (newSeenIds.has(cached.id)) continue;
+      newSeenIds.add(cached.id);
+      newAuthors.add(cached.pubkey);
+      Profiles.request(cached.pubkey);
+
+      const event: NostrEvent = {
+        id: cached.id, pubkey: cached.pubkey, kind: cached.kind,
+        created_at: cached.created_at, content: cached.content,
+        tags: cached.tags, sig: cached.sig,
+      };
+      const note = processEvent(event);
+      if (note.replyTo) ParentNotes.request(note.replyTo);
+      newNotes.push(note);
+      newNotesById.set(note.id, note);
+    }
+
+    useFeedStore.setState({
+      notes: newNotes,
+      notesById: newNotesById,
+      seenIds: newSeenIds,
+      authors: newAuthors,
+    } as any);
+  } catch {
+    // IndexedDB read failed, no cached data
+  }
+}
+
+// ── EventBuffer initialization ──
+// Called from Feed.tsx before relay is initialized.
+export function initEventBuffer(): void {
+  EventBuffer.init(handleBufferFlush);
+}
+
+// ── IndexedDB seenIds hydration ──
+// Hydrate seenIds from IndexedDB on startup. Also migrates legacy sessionStorage data.
+export async function hydrateSeenIds(): Promise<void> {
+  const dbIds = await DB.loadSeenIds();
+
+  // Migrate legacy sessionStorage seenIds if present
+  try {
+    const raw = sessionStorage.getItem('wot-feed-seen-ids');
+    if (raw) {
+      const arr = JSON.parse(raw) as string[];
+      for (const id of arr) dbIds.add(id);
+      DB.addSeenIds(arr);
+      sessionStorage.removeItem('wot-feed-seen-ids');
+    }
+  } catch { /* ignore */ }
+
+  if (dbIds.size > 0) {
+    useFeedStore.setState({ seenIds: dbIds } as any);
+  }
+}
+
+// Flush pending DB writes on page unload
 if (typeof window !== 'undefined') {
   window.addEventListener('beforeunload', () => {
-    saveCachedSeenIds(useFeedStore.getState().seenIds);
+    DB.flush();
   });
-  setInterval(() => {
-    saveCachedSeenIds(useFeedStore.getState().seenIds);
-  }, 30000);
 }

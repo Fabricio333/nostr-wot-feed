@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { Shield, Loader2, Users, Globe, ArrowUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useFeedStore } from '@/stores/feedStore';
+import { useFeedStore, hydrateSeenIds, initEventBuffer, loadCachedFeed, markFollowingPubkeys } from '@/stores/feedStore';
 import type { FeedMode } from '@/stores/feedStore';
 import { useAuthStore } from '@/stores/authStore';
+import { useProfileStore } from '@/stores/profileStore';
 import { useWoTStore } from '@/stores/wotStore';
 import { Relay } from '@/services/relay';
 import { WoT } from '@/services/wot';
@@ -11,9 +13,13 @@ import { Profiles } from '@/services/profiles';
 import { Follows } from '@/services/follows';
 import { Mute } from '@/services/mute';
 import { loadSettings } from '@/services/settings';
+import { DB } from '@/services/db';
+import { RelayStats } from '@/services/relayStats';
+import { Verifier } from '@/services/verifier';
 import { NotePost } from '@/app/components/NotePost';
 import { WoTLogo } from '@/app/components/WoTLogo';
 import { usePullToRefresh } from '@/hooks/usePullToRefresh';
+import { useScrollRestoration } from '@/hooks/useScrollRestoration';
 
 export function Feed() {
   const {
@@ -48,9 +54,9 @@ export function Feed() {
   const { pubkey: myPubkey } = useAuthStore();
   const { hasExtension: wotExtDetected } = useWoTStore();
   const [relayTick, setRelayTick] = useState(0);
+  const [scrollParent, setScrollParent] = useState<HTMLElement | null>(null);
   const initRef = React.useRef(false);
-  const observerRef = useRef<IntersectionObserver | null>(null);
-  const throttleRef = useRef(false);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const scrollContainerRef = useRef<HTMLElement | null>(null);
 
   // Track per-relay connection changes for the status display
@@ -69,11 +75,11 @@ export function Feed() {
     const main = document.querySelector('main');
     if (!main) return;
     scrollContainerRef.current = main;
+    setScrollParent(main); // Trigger re-render so Virtuoso gets the ref
 
     const onScroll = () => {
       const scrolled = main.scrollTop > 300;
       setIsScrolledDown(scrolled);
-      // When user scrolls back to top, reveal any queued notes
       if (main.scrollTop < 50) {
         revealNewNotes();
       }
@@ -82,6 +88,9 @@ export function Feed() {
     main.addEventListener('scroll', onScroll, { passive: true });
     return () => main.removeEventListener('scroll', onScroll);
   }, [setIsScrolledDown, revealNewNotes]);
+
+  // Scroll position restoration across navigation
+  useScrollRestoration(`feed-${feedMode}`, scrollContainerRef);
 
   // Pull-to-refresh
   const { pullDistance, isRefreshing, threshold: pullThreshold } = usePullToRefresh({
@@ -101,44 +110,75 @@ export function Feed() {
     }
   }, [myPubkey, feedMode, setFeedMode]);
 
-  // Initialize relay + WoT on mount
+  // Stable refs for callbacks (avoids stale closures in init)
+  const addEventRef = useRef(addEvent);
+  const setEoseRef = useRef(setEose);
+  const setRelayStatusRef = useRef(setRelayStatus);
+  const setWotStatusRef = useRef(setWotStatus);
+  addEventRef.current = addEvent;
+  setEoseRef.current = setEose;
+  setRelayStatusRef.current = setRelayStatus;
+  setWotStatusRef.current = setWotStatus;
+
+  // Initialize all services on mount
   useEffect(() => {
-    // Guard against React strict mode double-mount
     if (initRef.current) return;
     initRef.current = true;
 
-    loadSettings();
+    const initAll = async () => {
+      loadSettings();
 
-    // Init WoT with retry for extension detection
-    const initWoT = async () => {
-      let result = await WoT.init();
-      if (!result.hasExtension) {
-        // Retry after delays — extension may load after page
-        for (const delay of [500, 1500, 3000]) {
-          await new Promise((r) => setTimeout(r, delay));
-          result = await WoT.init();
-          if (result.hasExtension) break;
+      // Initialize IndexedDB first (required by other services)
+      await DB.init();
+
+      // Initialize services that depend on DB in parallel
+      await Promise.all([
+        RelayStats.init(),
+        Profiles.init(),
+        hydrateSeenIds(),
+        DB.pruneOldEvents(7),
+      ]);
+
+      // Sync profile store with the service cache loaded from IndexedDB
+      useProfileStore.getState().syncFromService();
+
+      // Load cached feed for instant render before relay connects
+      const currentFeedMode = useFeedStore.getState().feedMode;
+      await loadCachedFeed(currentFeedMode);
+
+      // Initialize Web Worker for signature verification
+      Verifier.init();
+
+      // Initialize EventBuffer before relay (events arrive after relay.init)
+      initEventBuffer();
+
+      // Init WoT with retry for extension detection (fire and forget)
+      (async () => {
+        let result = await WoT.init();
+        if (!result.hasExtension) {
+          for (const delay of [500, 1500, 3000]) {
+            await new Promise((r) => setTimeout(r, delay));
+            result = await WoT.init();
+            if (result.hasExtension) break;
+          }
         }
-      }
-      setWotStatus(result);
-      useWoTStore.getState().setHasExtension(result.hasExtension);
+        setWotStatusRef.current(result);
+        useWoTStore.getState().setHasExtension(result.hasExtension);
+      })();
+
+      // Init relay — events start flowing after this
+      Relay.init(
+        (event) => addEventRef.current(event),
+        (status) => {
+          if (status === 'eose') {
+            setEoseRef.current();
+          }
+          setRelayStatusRef.current(status === 'eose' ? 'eose' : status);
+        }
+      );
     };
-    initWoT();
 
-    // Init relay
-    Relay.init(
-      (event) => {
-        addEvent(event);
-      },
-      (status) => {
-        if (status === 'eose') {
-          setEose();
-        }
-        setRelayStatus(status === 'eose' ? 'eose' : status);
-      }
-    );
-
-    // Don't destroy relay on cleanup — it's a singleton shared across the app
+    initAll();
   }, []);
 
   // After EOSE, batch-score all notes and load mute list
@@ -178,6 +218,8 @@ export function Feed() {
             setFollowingLoading(false);
             return;
           }
+          // Mark following pubkeys so DB writes get the correct feedType
+          markFollowingPubkeys(pubkeys);
           Relay.subscribeFollowing(
             pubkeys,
             (event) => addEvent(event),
@@ -208,33 +250,10 @@ export function Feed() {
   const isStreaming = !eoseReceived;
   const isWaitingForFollows = feedMode === 'following' && followingLoading;
 
-  // Infinite scroll via IntersectionObserver with callback ref
-  // Uses a callback ref so the observer is properly set up/torn down
-  // when the sentinel element mounts/unmounts due to conditional rendering.
-  const setSentinelRef = useCallback((node: HTMLDivElement | null) => {
-    if (observerRef.current) {
-      observerRef.current.disconnect();
-      observerRef.current = null;
-    }
-    if (!node) return;
-
-    observerRef.current = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting && !throttleRef.current) {
-          throttleRef.current = true;
-          loadMore();
-          setTimeout(() => { throttleRef.current = false; }, 800);
-        }
-      },
-      { threshold: 0, rootMargin: '200px' }
-    );
-    observerRef.current.observe(node);
+  // Virtuoso endReached handler for infinite scroll
+  const handleEndReached = useCallback(() => {
+    loadMore();
   }, [loadMore]);
-
-  // Cleanup observer on unmount
-  useEffect(() => {
-    return () => observerRef.current?.disconnect();
-  }, []);
 
   return (
     <div className="bg-black min-h-screen text-white pb-24 md:pb-0">
@@ -322,15 +341,49 @@ export function Feed() {
         </div>
       )}
 
-      {/* Notes list — rendered immediately as notes arrive */}
-      <div className="max-w-xl mx-auto divide-y divide-zinc-800">
-        {displayedNotes.map((note) => (
-          <NotePost key={note.id} note={note} />
-        ))}
-      </div>
+      {/* Notes list — virtualized for performance */}
+      {hasNotes && (
+        <div className="max-w-xl mx-auto">
+          {scrollParent ? (
+            <Virtuoso
+              ref={virtuosoRef}
+              data={displayedNotes}
+              customScrollParent={scrollParent}
+              overscan={800}
+              defaultItemHeight={200}
+              endReached={handleEndReached}
+              itemContent={(_index, note) => (
+                <div className="border-b border-zinc-800">
+                  <NotePost key={note.id} note={note} />
+                </div>
+              )}
+              components={{
+                Footer: () => (
+                  <>
+                    {loadingMore && (
+                      <div className="py-4 text-center" style={{ animation: 'fade-in 0.2s ease-out both' }}>
+                        <Loader2 className="animate-spin mx-auto text-zinc-600" size={20} />
+                      </div>
+                    )}
+                    {!hasMoreNotes && !loadingMore && (
+                      <div className="text-center py-6 text-zinc-600 text-sm">
+                        You've seen it all
+                      </div>
+                    )}
+                  </>
+                ),
+              }}
+            />
+          ) : (
+            displayedNotes.map((note) => (
+              <NotePost key={note.id} note={note} />
+            ))
+          )}
+        </div>
+      )}
 
       {/* Empty state — only after loading is definitively done */}
-      {eoseReceived && !followingLoading && !loadingMore && filteredNotes.length === 0 && (
+      {!hasNotes && eoseReceived && !followingLoading && !loadingMore && filteredNotes.length === 0 && (
         <div className="text-center py-16 text-zinc-500">
           {feedMode === 'following' ? (
             <>
@@ -353,25 +406,6 @@ export function Feed() {
             </>
           )}
         </div>
-      )}
-
-      {/* End of feed */}
-      {!hasMoreNotes && hasNotes && !loadingMore && (
-        <div className="text-center py-6 text-zinc-600 text-sm">
-          You've seen it all
-        </div>
-      )}
-
-      {/* Loading more spinner (pagination in progress) */}
-      {loadingMore && (
-        <div className="py-4 text-center" style={{ animation: 'fade-in 0.2s ease-out both' }}>
-          <Loader2 className="animate-spin mx-auto text-zinc-600" size={20} />
-        </div>
-      )}
-
-      {/* Infinite scroll sentinel */}
-      {hasNotes && !loadingMore && hasMoreNotes && (
-        <div ref={setSentinelRef} className="h-10" />
       )}
 
       {/* Scroll-to-top FAB when new notes arrive */}
