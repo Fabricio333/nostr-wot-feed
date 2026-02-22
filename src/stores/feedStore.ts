@@ -48,6 +48,27 @@ function saveCachedSeenIds(ids: Set<string>): void {
 
 export type FeedMode = 'following' | 'global';
 
+// ── Module-level animation tracking ──
+// Each note only animates its entry once. Prevents replay on re-sort or re-mount.
+const animatedNoteIds = new Set<string>();
+
+export function shouldAnimate(noteId: string): boolean {
+  if (animatedNoteIds.has(noteId)) return false;
+  animatedNoteIds.add(noteId);
+  if (animatedNoteIds.size > 5000) {
+    const iter = animatedNoteIds.values();
+    for (let i = 0; i < 1000; i++) {
+      const val = iter.next().value;
+      if (val) animatedNoteIds.delete(val);
+    }
+  }
+  return true;
+}
+
+// ── Module-level filtered notes cache ──
+let _filteredCache: Note[] | null = null;
+let _filteredCacheKey = '';
+
 // ── Module-level event batching ──
 // During initial streaming (before EOSE), events are batched so the UI
 // renders in groups of ~10 instead of one-by-one.
@@ -137,6 +158,7 @@ interface FeedStore {
   wotStatus: { hasExtension: boolean };
   wotScoringDone: boolean;
   shuffleSeed: number;
+  frozenOrder: string[];
 
   // Pagination state
   loadingMore: boolean;
@@ -179,6 +201,7 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
   wotStatus: { hasExtension: false },
   wotScoringDone: false,
   shuffleSeed: Date.now(),
+  frozenOrder: [],
 
   loadingMore: false,
   hasMoreNotes: true,
@@ -441,6 +464,9 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
 
   pullRefresh: async () => {
     // Re-establish relay subscriptions to fetch fresh notes
+    animatedNoteIds.clear();
+    _filteredCache = null;
+    _filteredCacheKey = '';
     set({
       initialRenderDone: false,
       eoseReceived: false,
@@ -448,16 +474,20 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
       displayLimit: PAGE_SIZE,
       shuffleSeed: Date.now(),
       hasMoreNotes: true,
+      frozenOrder: [],
     });
     Relay.reconnect();
   },
 
   setFeedMode: (mode: FeedMode) => {
+    _filteredCache = null;
+    _filteredCacheKey = '';
     set({
       feedMode: mode,
       displayLimit: PAGE_SIZE,
       shuffleSeed: Date.now(),
       hasMoreNotes: true,
+      frozenOrder: [],
     });
   },
 
@@ -477,17 +507,25 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
       await WoT.scoreBatch(allPubkeys);
     }
 
-    // Re-process all notes with updated trust data
+    // Capture the current chronological order BEFORE scoring changes anything.
+    // This is the order the user has been reading — we preserve it.
     const current = get();
+    const preScorePool = current.feedMode === 'following'
+      ? current.notes.filter(n => Follows.following.has(n.pubkey))
+      : current.notes;
+    const frozenOrder = sortNotes(preScorePool, 'newest').map(n => n.id);
+
+    // Re-process all notes with updated trust data
+    const settings = getSettings();
+    const trustWeight = settings.trustWeight;
+    const recencyWeight = 1 - trustWeight;
+    const maxAge = settings.timeWindow * 60 * 60;
+    const now = Math.floor(Date.now() / 1000);
+
     const updatedNotes = current.notes.map((note) => {
       const trust = WoT.cache.get(note.pubkey);
       if (!trust) return note;
 
-      const settings = getSettings();
-      const trustWeight = settings.trustWeight;
-      const recencyWeight = 1 - trustWeight;
-      const maxAge = settings.timeWindow * 60 * 60;
-      const now = Math.floor(Date.now() / 1000);
       const ageSeconds = now - note.created_at;
       const recencyScore = Math.max(0, 1 - ageSeconds / maxAge);
       const combinedScore = trust.score * trustWeight + recencyScore * recencyWeight;
@@ -505,16 +543,27 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
     const updatedById = new Map<string, Note>();
     for (const n of updatedNotes) updatedById.set(n.id, n);
 
+    // Invalidate filtered cache
+    _filteredCache = null;
+    _filteredCacheKey = '';
+
     set({
       notes: updatedNotes,
       notesById: updatedById,
       wotScoringDone: true,
+      frozenOrder,
     } as any);
   },
 
   getFilteredNotes: () => {
     const state = get();
     const settings = getSettings();
+
+    // Module-level cache: avoid recomputing on renders where nothing changed
+    const cacheKey = `${state.notes.length}-${state.feedMode}-${state.wotScoringDone}-${state.shuffleSeed}-${state.followsTick}-${state.showingBookmarks}`;
+    if (_filteredCacheKey === cacheKey && _filteredCache) {
+      return _filteredCache;
+    }
 
     // Pre-filter by feed mode
     let pool = state.notes;
@@ -541,29 +590,57 @@ export const useFeedStore = create<FeedStore>((set, get) => ({
         : undefined,
     });
 
+    let result: Note[];
+
     // For following tab, sort by newest
     if (state.feedMode === 'following') {
-      return sortNotes(filtered, 'newest');
+      result = sortNotes(filtered, 'newest');
     }
-
     // Global tab before scoring: sort by newest as placeholder
-    if (!state.wotScoringDone) {
-      return sortNotes(filtered, 'newest');
+    else if (!state.wotScoringDone) {
+      result = sortNotes(filtered, 'newest');
+    }
+    // Global tab after scoring with explicit sort mode
+    else if (settings.sortMode && settings.sortMode !== 'trust-desc') {
+      result = sortNotes(filtered, settings.sortMode);
+    }
+    // Global tab after scoring: stable order using frozenOrder
+    else if (state.frozenOrder.length > 0) {
+      const frozenSet = new Set(state.frozenOrder);
+      const filteredMap = new Map(filtered.map(n => [n.id, n]));
+
+      // Preserved-order notes (that survived filtering)
+      const preserved: Note[] = [];
+      for (const id of state.frozenOrder) {
+        const note = filteredMap.get(id);
+        if (note) preserved.push(note);
+      }
+
+      // New notes (arrived after scoring) — rank by trust
+      const newNotes = filtered.filter(n => !frozenSet.has(n.id));
+      const rng = mulberry32(state.shuffleSeed);
+      const ranked = newNotes
+        .map(note => ({ note, priority: note.combinedScore + rng() * 0.3 }))
+        .sort((a, b) => b.priority - a.priority)
+        .map(s => s.note);
+
+      result = [...preserved, ...ranked];
+    }
+    // Fallback: trust-weighted shuffle
+    else {
+      const rng = mulberry32(state.shuffleSeed);
+      const shuffled = filtered.map((note) => ({
+        note,
+        priority: note.combinedScore + rng() * 0.3,
+      }));
+      shuffled.sort((a, b) => b.priority - a.priority);
+      result = shuffled.map((s) => s.note);
     }
 
-    // Global tab after scoring: respect sortMode setting
-    if (settings.sortMode && settings.sortMode !== 'trust-desc') {
-      return sortNotes(filtered, settings.sortMode);
-    }
-
-    // Default: trust-weighted shuffle with stable seed
-    const rng = mulberry32(state.shuffleSeed);
-    const shuffled = filtered.map((note) => ({
-      note,
-      priority: note.combinedScore + rng() * 0.3,
-    }));
-    shuffled.sort((a, b) => b.priority - a.priority);
-    return shuffled.map((s) => s.note);
+    // Cache the result
+    _filteredCache = result;
+    _filteredCacheKey = cacheKey;
+    return result;
   },
 }));
 

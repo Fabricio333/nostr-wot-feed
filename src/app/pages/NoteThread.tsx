@@ -23,7 +23,6 @@ export function NoteThread() {
   const [loading, setLoading] = useState(true);
   const [loadingReplies, setLoadingReplies] = useState(true);
   const [filteredCount, setFilteredCount] = useState(0);
-  const [parentTick, setParentTick] = useState(0);
   const targetRef = useRef<HTMLDivElement>(null);
 
   // Fetch the target note
@@ -69,17 +68,6 @@ export function NoteThread() {
     fetchReplies(id);
   }, [id]);
 
-  // Wire parent notes updates
-  useEffect(() => {
-    const prev = ParentNotes.onUpdate;
-    ParentNotes.onUpdate = (eventIds) => {
-      setParentTick((t) => t + 1);
-      prev?.(eventIds);
-    };
-    return () => {
-      ParentNotes.onUpdate = prev;
-    };
-  }, []);
 
   // Scroll to target note once parent chain loads
   useEffect(() => {
@@ -236,7 +224,7 @@ export function NoteThread() {
               {parentChain.map((note) => (
                 <div key={note.id} className="relative">
                   <div className="absolute left-0 top-1/2 w-3 h-px bg-zinc-700" />
-                  <NotePost note={note} parentTick={parentTick} />
+                  <NotePost note={note} />
                 </div>
               ))}
             </div>
@@ -244,7 +232,7 @@ export function NoteThread() {
 
           {/* Target note — highlighted */}
           <div ref={targetRef} className="ring-1 ring-purple-500/30 bg-purple-500/5">
-            <NotePost note={targetNote} parentTick={parentTick} />
+            <NotePost note={targetNote} />
           </div>
 
           {/* Replies section */}
@@ -271,7 +259,7 @@ export function NoteThread() {
               {replies.map((reply) => (
                 <div key={reply.id} className="relative">
                   <div className="absolute left-0 top-6 w-3 h-px bg-zinc-700" />
-                  <NotePost note={reply} parentTick={parentTick} />
+                  <NotePost note={reply} />
                 </div>
               ))}
             </div>

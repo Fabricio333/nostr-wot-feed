@@ -1,15 +1,13 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Shield, Loader2, Users, Globe, ArrowUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useFeedStore } from '@/stores/feedStore';
 import type { FeedMode } from '@/stores/feedStore';
-import { useProfileStore } from '@/stores/profileStore';
 import { useAuthStore } from '@/stores/authStore';
 import { useWoTStore } from '@/stores/wotStore';
 import { Relay } from '@/services/relay';
 import { WoT } from '@/services/wot';
 import { Profiles } from '@/services/profiles';
-import { ParentNotes } from '@/services/parentNotes';
 import { Follows } from '@/services/follows';
 import { Mute } from '@/services/mute';
 import { loadSettings } from '@/services/settings';
@@ -47,10 +45,8 @@ export function Feed() {
     pullRefresh,
     scoreAllNotes,
   } = useFeedStore();
-  const { updateTick } = useProfileStore();
   const { pubkey: myPubkey } = useAuthStore();
   const { hasExtension: wotExtDetected } = useWoTStore();
-  const [parentTick, setParentTick] = useState(0);
   const [relayTick, setRelayTick] = useState(0);
   const initRef = React.useRef(false);
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -129,11 +125,6 @@ export function Feed() {
     };
     initWoT();
 
-    // Wire parent notes updates
-    ParentNotes.onUpdate = () => {
-      setParentTick((t) => t + 1);
-    };
-
     // Init relay
     Relay.init(
       (event) => {
@@ -162,8 +153,10 @@ export function Feed() {
   useEffect(() => {
     if (eoseReceived && !scoringRef.current) {
       scoringRef.current = true;
-      Mute.loadFromRelay();
-      scoreAllNotes();
+      (async () => {
+        await Mute.loadFromRelay();
+        await scoreAllNotes();
+      })();
     }
   }, [eoseReceived, scoreAllNotes]);
 
@@ -201,8 +194,14 @@ export function Feed() {
     }
   }, [myPubkey, eoseReceived]);
 
-  const filteredNotes = getFilteredNotes();
-  const displayedNotes = filteredNotes.slice(0, displayLimit);
+  const filteredNotes = useMemo(
+    () => getFilteredNotes(),
+    [notes, feedMode, wotScoringDone, followsTick, getFilteredNotes]
+  );
+  const displayedNotes = useMemo(
+    () => filteredNotes.slice(0, displayLimit),
+    [filteredNotes, displayLimit]
+  );
 
   // Show notes progressively — only show a full-screen blocker if we have zero notes
   const hasNotes = displayedNotes.length > 0;
@@ -319,14 +318,14 @@ export function Feed() {
         <div className="px-4 py-2 bg-purple-900/20 text-purple-300 text-xs text-center border-b border-zinc-800 flex items-center justify-center gap-2">
           <Shield size={12} />
           <Loader2 className="animate-spin" size={12} />
-          <span>Scoring trust for {authors.size} authors — feed will re-sort when done</span>
+          <span>Scoring trust for {authors.size} authors...</span>
         </div>
       )}
 
       {/* Notes list — rendered immediately as notes arrive */}
       <div className="max-w-xl mx-auto divide-y divide-zinc-800">
         {displayedNotes.map((note) => (
-          <NotePost key={note.id} note={note} parentTick={parentTick} />
+          <NotePost key={note.id} note={note} />
         ))}
       </div>
 

@@ -10,7 +10,13 @@ class ParentNotesService {
   cache = new Map<string, ParentNote>();
   private _pendingIds = new Set<string>();
   private _fetchTimer: ReturnType<typeof setTimeout> | null = null;
+  private _listeners = new Set<(eventIds: string[]) => void>();
   onUpdate: ((eventIds: string[]) => void) | null = null;
+
+  addListener(fn: (eventIds: string[]) => void): () => void {
+    this._listeners.add(fn);
+    return () => this._listeners.delete(fn);
+  }
 
   localNotesById: Map<string, { pubkey: string; content: string }> | null = null;
 
@@ -53,6 +59,7 @@ class ParentNotesService {
 
     if (fetched.length > 0) {
       this.onUpdate?.(fetched);
+      for (const fn of this._listeners) fn(fetched);
     }
   }
 }

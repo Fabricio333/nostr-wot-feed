@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { useSearchParams } from 'react-router';
-import { Search, Hash, Loader2, X, Image as ImageIcon } from 'lucide-react';
+import { useSearchParams, useNavigate } from 'react-router';
+import { Search, Hash, Loader2, X, Image as ImageIcon, Shield } from 'lucide-react';
 import Masonry, { ResponsiveMasonry } from 'react-responsive-masonry';
 import { cn } from '@/lib/utils';
 import { Relay } from '@/services/relay';
@@ -8,6 +8,7 @@ import { Profiles } from '@/services/profiles';
 import { WoT } from '@/services/wot';
 import { parseContent } from '@/services/content';
 import { processEvent, filterNotes, sortNotes } from '@/services/feed';
+import { getSettings } from '@/services/settings';
 import { useFeedStore } from '@/stores/feedStore';
 import { useProfileStore } from '@/stores/profileStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -16,9 +17,11 @@ import { nip19 } from 'nostr-tools';
 import { NotePost } from '@/app/components/NotePost';
 import type { Note, NostrEvent } from '@/types/nostr';
 import { useLightboxStore } from '@/stores/lightboxStore';
+import { usePullToRefresh } from '@/hooks/usePullToRefresh';
 
 const TRENDING_TAGS = ['bitcoin', 'nostr', 'zap', 'art', 'photography', 'music', 'dev'];
 const GRID_PAGE_SIZE = 30;
+const EXPLORE_FETCH_LIMIT = 300;
 
 export function Explore() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -32,37 +35,142 @@ export function Explore() {
   const [searchLoading, setSearchLoading] = useState(false);
   const initialSearchDone = useRef(false);
 
-  // Media grid state — derived from feedStore
-  const notes = useFeedStore((s) => s.notes);
+  // Media grid state
+  const feedNotes = useFeedStore((s) => s.notes);
+  const wotScoringDone = useFeedStore((s) => s.wotScoringDone);
+  const [exploreNotes, setExploreNotes] = useState<Note[]>([]);
+  const [exploreFetching, setExploreFetching] = useState(false);
   const [gridLimit, setGridLimit] = useState(GRID_PAGE_SIZE);
   const sentinelRef = useRef<HTMLDivElement>(null);
-  const displayedIdsRef = useRef<Set<string>>(new Set());
+  const fetchedRef = useRef(false);
+  const scrollContainerRef = useRef<HTMLElement | null>(null);
 
-  // Filter notes with images for the media grid
+  // Pull-to-refresh
+  const getScrollContainer = useCallback(() => scrollContainerRef.current, []);
+
+  const handleRefresh = useCallback(async () => {
+    fetchedRef.current = false;
+    await fetchExploreMedia();
+  }, []);
+
+  const { pullDistance, isRefreshing, threshold: pullThreshold } = usePullToRefresh({
+    onRefresh: handleRefresh,
+    getScrollContainer,
+  });
+
+  // Find scroll container on mount
+  useEffect(() => {
+    const main = document.querySelector('main');
+    if (main) scrollContainerRef.current = main;
+  }, []);
+
+  // Merge feed notes + dedicated explore notes, deduped
+  const allNotes = useMemo(() => {
+    const byId = new Map<string, Note>();
+    for (const n of feedNotes) byId.set(n.id, n);
+    for (const n of exploreNotes) byId.set(n.id, n);
+    return Array.from(byId.values());
+  }, [feedNotes, exploreNotes]);
+
+  // Filter media notes through WoT
   const mediaNotes = useMemo(() => {
+    const filtered = filterNotes(allNotes, {
+      trustedOnly: settings.trustedOnly,
+      maxHops: settings.maxHops,
+      trustThreshold: settings.trustThreshold,
+    });
+
+    // Sort by trust score (highest first), then recency as tiebreaker
+    const sorted = [...filtered].sort((a, b) => {
+      if (b.trustScore !== a.trustScore) return b.trustScore - a.trustScore;
+      return b.created_at - a.created_at;
+    });
+
+    // Extract only notes with images
     const result: Note[] = [];
-    const seen = displayedIdsRef.current;
-
-    // Sort by combined score (trust + recency)
-    const sorted = [...notes].sort((a, b) => b.combinedScore - a.combinedScore);
-
     for (const note of sorted) {
       if (result.length >= gridLimit) break;
       const parsed = parseContent(note.content);
-      const hasImage = parsed.some((p) => p.type === 'image');
-      if (!hasImage) continue;
-      // Deduplicate: track what we've shown
-      seen.add(note.id);
-      result.push(note);
+      if (parsed.some((p) => p.type === 'image')) {
+        result.push(note);
+      }
+    }
+    return result;
+  }, [allNotes, gridLimit, settings.trustedOnly, settings.maxHops, settings.trustThreshold]);
+
+  // Total media notes available (with WoT filtering applied)
+  const totalMediaCount = useMemo(() => {
+    const filtered = filterNotes(allNotes, {
+      trustedOnly: settings.trustedOnly,
+      maxHops: settings.maxHops,
+      trustThreshold: settings.trustThreshold,
+    });
+    return filtered.filter((n) => parseContent(n.content).some((p) => p.type === 'image')).length;
+  }, [allNotes, settings.trustedOnly, settings.maxHops, settings.trustThreshold]);
+
+  // Fetch dedicated explore media from relays
+  const fetchExploreMedia = useCallback(async () => {
+    if (fetchedRef.current || exploreFetching) return;
+    fetchedRef.current = true;
+    setExploreFetching(true);
+
+    const pool = Relay.pool;
+    if (!pool) {
+      setExploreFetching(false);
+      return;
     }
 
-    return result;
-  }, [notes, gridLimit]);
+    try {
+      const urls = Relay.getUrls();
+      const s = getSettings();
+      const since = Math.floor(Date.now() / 1000) - s.timeWindow * 60 * 60;
 
-  // Reset displayed IDs cache when notes change substantially
+      const events = await pool.querySync(
+        urls,
+        { kinds: [1], since, limit: EXPLORE_FETCH_LIMIT } as any
+      ) as NostrEvent[];
+
+      // Score all authors
+      const pubkeys = [...new Set(events.map((e) => e.pubkey))];
+      if (pubkeys.length > 0) {
+        await WoT.scoreBatch(pubkeys);
+      }
+
+      // Process and enrich with trust data
+      const processed = events.map((ev) => {
+        Profiles.request(ev.pubkey);
+        const note = processEvent(ev);
+        const trust = WoT.cache.get(ev.pubkey);
+        if (trust) {
+          return {
+            ...note,
+            trustScore: trust.score,
+            distance: trust.distance,
+            trusted: trust.trusted,
+            paths: trust.paths,
+          };
+        }
+        return note;
+      });
+
+      setExploreNotes(processed);
+    } catch {
+      // fetch failed silently
+    }
+    setExploreFetching(false);
+  }, []);
+
+  // Fetch explore media on mount once WoT scoring is done or after a short delay
   useEffect(() => {
-    displayedIdsRef.current = new Set(mediaNotes.map((n) => n.id));
-  }, [mediaNotes]);
+    if (fetchedRef.current) return;
+    if (wotScoringDone) {
+      fetchExploreMedia();
+    } else {
+      // Fallback: fetch after 3s even if scoring isn't done yet
+      const timer = setTimeout(() => fetchExploreMedia(), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [wotScoringDone, fetchExploreMedia]);
 
   // Infinite scroll for media grid
   useEffect(() => {
@@ -225,10 +333,7 @@ export function Explore() {
     setSearchResults([]);
   };
 
-  // Total media notes available (to know if there are more to load)
-  const totalMediaCount = useMemo(() => {
-    return notes.filter((n) => parseContent(n.content).some((p) => p.type === 'image')).length;
-  }, [notes]);
+  const isLoading = exploreFetching && mediaNotes.length === 0;
 
   return (
     <div className="bg-black min-h-screen text-white pb-24 md:pb-0">
@@ -257,6 +362,25 @@ export function Explore() {
         </form>
       </header>
 
+      {/* Pull-to-refresh indicator */}
+      <div
+        className="overflow-hidden transition-[height] duration-200 ease-out"
+        style={{ height: isRefreshing ? 48 : Math.min(pullDistance * 0.6, 48) }}
+      >
+        <div className="flex items-center justify-center h-12 text-zinc-400">
+          <Loader2
+            className={cn('transition-transform duration-200', isRefreshing && 'animate-spin')}
+            size={20}
+            style={{
+              transform: !isRefreshing
+                ? `rotate(${Math.min((pullDistance / pullThreshold) * 180, 180)}deg)`
+                : undefined,
+              opacity: isRefreshing ? 1 : Math.min(pullDistance / 30, 1),
+            }}
+          />
+        </div>
+      </div>
+
       {/* Search Results */}
       {searchType !== 'none' && (
         <div className="max-w-xl mx-auto">
@@ -272,7 +396,7 @@ export function Explore() {
           {!searchLoading && searchResults.length > 0 && (
             <div className="divide-y divide-zinc-800">
               {searchResults.map((note) => (
-                <NotePost key={note.id} note={note} parentTick={0} />
+                <NotePost key={note.id} note={note} />
               ))}
             </div>
           )}
@@ -299,15 +423,23 @@ export function Explore() {
             ))}
           </div>
 
+          {/* Loading state */}
+          {isLoading && (
+            <div className="flex items-center justify-center gap-2 py-12 text-zinc-400">
+              <Loader2 className="animate-spin" size={20} />
+              <span>Discovering trusted media...</span>
+            </div>
+          )}
+
           {/* Media Discovery Grid */}
           <div className="p-2">
-            {mediaNotes.length === 0 ? (
+            {!isLoading && mediaNotes.length === 0 ? (
               <div className="text-center py-16 text-zinc-500">
                 <ImageIcon size={32} className="mx-auto mb-3 text-zinc-600" />
-                <p>No media notes yet</p>
-                <p className="text-sm mt-1">Media from notes will appear here as the feed loads</p>
+                <p>No trusted media found</p>
+                <p className="text-sm mt-1">Media from WoT-trusted authors will appear here</p>
               </div>
-            ) : (
+            ) : mediaNotes.length > 0 ? (
               <ResponsiveMasonry columnsCountBreakPoints={{ 0: 2, 768: 3 }}>
                 <Masonry gutter="6px">
                   {mediaNotes.map((note) => (
@@ -315,7 +447,7 @@ export function Explore() {
                   ))}
                 </Masonry>
               </ResponsiveMasonry>
-            )}
+            ) : null}
           </div>
 
           {/* Infinite scroll sentinel */}
@@ -331,6 +463,7 @@ export function Explore() {
 }
 
 function MediaGridItem({ note }: { note: Note }) {
+  const navigate = useNavigate();
   const { updateTick } = useProfileStore();
   const openLightbox = useLightboxStore((s) => s.open);
   const profile = Profiles.get(note.pubkey);
@@ -340,22 +473,41 @@ function MediaGridItem({ note }: { note: Note }) {
   if (!firstImage) return null;
 
   const lightboxItems = allImages.map((img) => ({ type: 'image' as const, src: img.value }));
+  const pct = Math.round(note.trustScore * 100);
+  const color = trustColor(note.trustScore);
 
   return (
     <div
-      className="relative group cursor-pointer rounded-lg overflow-hidden"
-      style={{ animation: 'note-enter 0.4s ease-out both', cursor: 'zoom-in' }}
-      onClick={() => openLightbox(lightboxItems, 0)}
+      className="relative group rounded-lg overflow-hidden"
+      style={{ animation: 'note-enter 0.4s ease-out both' }}
     >
+      {/* Image — opens lightbox */}
       <img
         src={firstImage.value}
         alt=""
-        className="w-full object-cover"
+        className="w-full object-cover cursor-zoom-in"
         loading="lazy"
+        onClick={() => openLightbox(lightboxItems, 0)}
       />
-      {/* Hover overlay */}
-      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-2">
-        <div className="flex items-center gap-2">
+
+      {/* Trust badge — always visible (top-right) */}
+      {note.trusted && (
+        <div
+          className="absolute top-1.5 right-1.5 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-black/70 text-[10px] font-medium backdrop-blur-sm"
+          style={{ color }}
+        >
+          <Shield size={9} />
+          {pct}%
+        </div>
+      )}
+
+      {/* Hover overlay — full author + trust details, click navigates to thread */}
+      <div
+        className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-2 cursor-pointer"
+        onClick={() => navigate(`/note/${note.id}`)}
+      >
+        {/* Author row */}
+        <div className="flex items-center gap-2 mb-1">
           <div className="w-6 h-6 rounded-full overflow-hidden bg-zinc-700 flex-shrink-0">
             {profile?.picture ? (
               <img src={profile.picture} alt="" className="w-full h-full object-cover" />
@@ -366,12 +518,26 @@ function MediaGridItem({ note }: { note: Note }) {
           <span className="text-white text-xs truncate">
             {profile?.displayName || profile?.name || truncateNpub(note.pubkey)}
           </span>
-          {note.trusted && (
-            <span className="text-xs" style={{ color: trustColor(note.trustScore) }}>
-              {Math.round(note.trustScore * 100)}%
-            </span>
-          )}
         </div>
+
+        {/* Trust details */}
+        {note.trusted && (
+          <div
+            className="flex items-center gap-1 text-[10px] font-medium"
+            style={{ color }}
+          >
+            <Shield size={10} />
+            <span>{pct}%</span>
+            <span className="text-zinc-500">·</span>
+            <span>{note.distance}h</span>
+            {note.paths > 0 && (
+              <>
+                <span className="text-zinc-500">·</span>
+                <span>{note.paths}p</span>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

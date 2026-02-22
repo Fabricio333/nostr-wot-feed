@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { MessageSquare, Repeat2, Heart, Shield } from 'lucide-react';
 import { NoteActionsMenu } from './NoteActionsMenu';
 import { cn } from '@/lib/utils';
@@ -13,20 +13,50 @@ import { timeAgo, truncateNpub, pubkeyColor, trustColor } from '@/utils/helpers'
 import type { Note, ParsedContent as ParsedContentType } from '@/types/nostr';
 import { ClickableMedia } from './ClickableMedia';
 import type { LightboxItem } from '@/stores/lightboxStore';
+import { shouldAnimate } from '@/stores/feedStore';
 
-export function NotePost({ note, parentTick }: { note: Note; parentTick: number }) {
+function NotePostInner({ note }: { note: Note }) {
   const navigate = useNavigate();
-  const profile = Profiles.get(note.pubkey);
-  const { updateTick } = useProfileStore();
+
+  // Targeted profile selector: only re-renders when THIS note's profile changes
+  const profile = useProfileStore(
+    useCallback((s) => s.profiles.get(note.pubkey) ?? null, [note.pubkey])
+  );
+
   const [liked, setLiked] = useState(false);
   const [reposted, setReposted] = useState(false);
   const [muted, setMuted] = useState(Mute.isMuted(note.pubkey));
+
+  // Local parent note state: only re-renders when THIS note's parent loads
+  const [parentNote, setParentNote] = useState(
+    note.replyTo ? ParentNotes.get(note.replyTo) : null
+  );
 
   useEffect(() => {
     if (!profile) {
       Profiles.request(note.pubkey);
     }
   }, [note.pubkey, profile]);
+
+  // Subscribe to parent note updates for this specific note
+  useEffect(() => {
+    if (!note.replyTo) return;
+    // Check if already loaded
+    const existing = ParentNotes.get(note.replyTo);
+    if (existing) {
+      setParentNote(existing);
+      return;
+    }
+    const unsub = ParentNotes.addListener((eventIds) => {
+      if (note.replyTo && eventIds.includes(note.replyTo)) {
+        setParentNote(ParentNotes.get(note.replyTo) ?? null);
+      }
+    });
+    return unsub;
+  }, [note.replyTo]);
+
+  // One-time entry animation
+  const animate = useMemo(() => shouldAnimate(note.id), [note.id]);
 
   const displayName = profile?.displayName || profile?.name || truncateNpub(note.pubkey);
   const handle = profile?.name ? `@${profile.name}` : truncateNpub(note.pubkey);
@@ -44,7 +74,6 @@ export function NotePost({ note, parentTick }: { note: Note; parentTick: number 
   ];
 
   // Reply context
-  const parentNote = note.replyTo ? ParentNotes.get(note.replyTo) : null;
   const parentProfile = parentNote ? Profiles.get(parentNote.pubkey) : null;
   const parentName = parentProfile?.displayName || parentProfile?.name || (parentNote ? truncateNpub(parentNote.pubkey) : null);
 
@@ -78,7 +107,7 @@ export function NotePost({ note, parentTick }: { note: Note; parentTick: number 
   return (
     <article
       className="p-4 hover:bg-zinc-900/30 transition-colors cursor-pointer border-b border-zinc-800"
-      style={{ animation: 'note-enter 0.35s ease-out both' }}
+      style={animate ? { animation: 'note-enter 0.35s ease-out both' } : undefined}
       onClick={handleNoteClick}
     >
       <div className="flex gap-3">
@@ -158,12 +187,23 @@ export function NotePost({ note, parentTick }: { note: Note; parentTick: number 
             <ContentDisplay parts={parsed.filter((p) => p.type !== 'image' && p.type !== 'video' && p.type !== 'youtube')} />
           </div>
 
-          {/* Media */}
-          {images.length > 0 && (
-            <div className={cn("mt-2 rounded-xl overflow-hidden", images.length > 1 ? "grid grid-cols-2 gap-0.5" : "")}>
+          {/* Media — with aspect-ratio containers to prevent layout shift */}
+          {images.length === 1 && (
+            <div className="mt-2 rounded-xl overflow-hidden">
+              <ClickableMedia items={mediaItems} index={0}>
+                <MediaPlaceholder aspectRatio="16/9">
+                  <img src={images[0].value} alt="" className="absolute inset-0 w-full h-full object-cover" loading="lazy" />
+                </MediaPlaceholder>
+              </ClickableMedia>
+            </div>
+          )}
+          {images.length > 1 && (
+            <div className="mt-2 rounded-xl overflow-hidden grid grid-cols-2 gap-0.5">
               {images.slice(0, 4).map((img, idx) => (
                 <ClickableMedia key={idx} items={mediaItems} index={idx}>
-                  <img src={img.value} alt="" className="w-full max-h-96 object-cover" loading="lazy" />
+                  <MediaPlaceholder aspectRatio="1/1">
+                    <img src={img.value} alt="" className="absolute inset-0 w-full h-full object-cover" loading="lazy" />
+                  </MediaPlaceholder>
                 </ClickableMedia>
               ))}
             </div>
@@ -171,7 +211,9 @@ export function NotePost({ note, parentTick }: { note: Note; parentTick: number 
           {videos.length > 0 && (
             <div className="mt-2 rounded-xl overflow-hidden">
               <ClickableMedia items={mediaItems} index={images.slice(0, 4).length}>
-                <video src={videos[0].value} className="w-full max-h-96" preload="metadata" />
+                <MediaPlaceholder aspectRatio="16/9">
+                  <video src={videos[0].value} className="absolute inset-0 w-full h-full object-cover" preload="metadata" />
+                </MediaPlaceholder>
               </ClickableMedia>
             </div>
           )}
@@ -205,6 +247,30 @@ export function NotePost({ note, parentTick }: { note: Note; parentTick: number 
         </div>
       </div>
     </article>
+  );
+}
+
+// React.memo with custom comparison — only re-render when note data actually changes
+export const NotePost = React.memo(NotePostInner, (prev, next) => {
+  return prev.note.id === next.note.id
+    && prev.note.content === next.note.content
+    && prev.note.trustScore === next.note.trustScore
+    && prev.note.trusted === next.note.trusted
+    && prev.note.pubkey === next.note.pubkey;
+});
+
+// Aspect-ratio placeholder that prevents layout shift while media loads
+function MediaPlaceholder({ aspectRatio, children }: { aspectRatio: string; children: React.ReactNode }) {
+  const [loaded, setLoaded] = useState(false);
+
+  return (
+    <div
+      className={cn('relative overflow-hidden', !loaded && 'media-placeholder')}
+      style={!loaded ? { aspectRatio } : undefined}
+      onLoad={() => setLoaded(true)}
+    >
+      {children}
+    </div>
   );
 }
 
