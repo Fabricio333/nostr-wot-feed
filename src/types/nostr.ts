@@ -78,6 +78,8 @@ export interface Conversation {
   lastMessage: string;
   lastTimestamp: number;
   unread: number;
+  isTrusted: boolean;
+  trustScore: number;
 }
 
 export interface DMMessage {

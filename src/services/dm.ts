@@ -3,6 +3,7 @@ import { Relay } from './relay';
 import { Signer } from './signer';
 import { Profiles } from './profiles';
 import { Mute } from './mute';
+import { WoT } from './wot';
 
 class DMService {
   private _events: NostrEvent[] = [];
@@ -124,6 +125,12 @@ class DMService {
       }
     }
 
+    // Score all conversation partners for WoT trust data
+    const unscoredPartners = [...convMap.keys()].filter(pk => !WoT.cache.has(pk));
+    if (unscoredPartners.length > 0) {
+      await WoT.scoreBatch(unscoredPartners);
+    }
+
     const conversations: Conversation[] = [];
 
     for (const [partnerPubkey, data] of convMap) {
@@ -142,11 +149,14 @@ class DMService {
         (ev) => ev.pubkey !== this._myPubkey && ev.created_at > lastReadTime
       ).length;
 
+      const trust = WoT.cache.get(partnerPubkey);
       conversations.push({
         partnerPubkey,
         lastMessage,
         lastTimestamp: data.lastTimestamp,
         unread,
+        isTrusted: trust?.trusted ?? false,
+        trustScore: trust?.score ?? 0,
       });
     }
 

@@ -16,6 +16,9 @@ import type { NostrEvent, ParsedContent } from '@/types/nostr';
 import { cn } from '@/lib/utils';
 import { FollowListDialog } from '@/app/components/FollowListDialog';
 import { ClickableMedia } from '@/app/components/ClickableMedia';
+import { EditProfileDialog } from '@/app/components/EditProfileDialog';
+import { ProfileActionsMenu } from '@/app/components/ProfileActionsMenu';
+import { QRCodeDialog } from '@/app/components/QRCodeDialog';
 import { useLightboxStore } from '@/stores/lightboxStore';
 
 export function Profile() {
@@ -41,6 +44,10 @@ export function Profile() {
   const [viewFollowers, setViewFollowers] = useState<string[]>([]);
   const [viewFollowersLoading, setViewFollowersLoading] = useState(false);
   const [showFollowersDialog, setShowFollowersDialog] = useState(false);
+
+  // Edit profile & QR dialogs
+  const [showEditProfile, setShowEditProfile] = useState(false);
+  const [showQRCode, setShowQRCode] = useState(false);
 
   // Determine which pubkey to show
   let viewPubkey = myPubkey;
@@ -209,12 +216,15 @@ export function Profile() {
                 <User size={48} className="text-white/60" />
               </div>
             )}
-            <div className="flex gap-2">
-              {isOwnProfile ? (
-                <button className="px-4 py-2 bg-transparent border border-zinc-600 rounded-full font-bold hover:bg-zinc-900 transition-colors">
+            <div className="flex gap-2 items-center">
+              {isOwnProfile && !isReadOnly ? (
+                <button
+                  onClick={() => setShowEditProfile(true)}
+                  className="px-4 py-2 bg-transparent border border-zinc-600 rounded-full font-bold hover:bg-zinc-900 transition-colors"
+                >
                   Edit Profile
                 </button>
-              ) : (
+              ) : !isOwnProfile ? (
                 <>
                   {canFollow && (
                     <button
@@ -255,6 +265,13 @@ export function Profile() {
                     {isMuted ? 'Unmute' : 'Mute'}
                   </button>
                 </>
+              ) : null}
+              {viewPubkey && npubDisplay && (
+                <ProfileActionsMenu
+                  pubkey={viewPubkey}
+                  npub={npubDisplay}
+                  onShowQR={() => setShowQRCode(true)}
+                />
               )}
             </div>
           </div>
@@ -413,6 +430,26 @@ export function Profile() {
         pubkeys={viewFollowers}
         loading={viewFollowersLoading}
       />
+
+      {/* Edit profile dialog */}
+      {isOwnProfile && !isReadOnly && viewPubkey && (
+        <EditProfileDialog
+          open={showEditProfile}
+          onOpenChange={setShowEditProfile}
+          currentProfile={profile}
+          pubkey={viewPubkey}
+        />
+      )}
+
+      {/* QR code dialog */}
+      {npubDisplay && (
+        <QRCodeDialog
+          open={showQRCode}
+          onOpenChange={setShowQRCode}
+          npub={npubDisplay}
+          displayName={displayName}
+        />
+      )}
     </div>
   );
 }

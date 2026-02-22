@@ -173,9 +173,11 @@ export function Explore() {
   }, [wotScoringDone, fetchExploreMedia]);
 
   // Infinite scroll for media grid
+  // Re-observe whenever gridLimit or totalMediaCount changes (sentinel may remount)
+  const hasMoreMedia = gridLimit < totalMediaCount;
   useEffect(() => {
     const sentinel = sentinelRef.current;
-    if (!sentinel || searchType !== 'none') return;
+    if (!sentinel || searchType !== 'none' || !hasMoreMedia) return;
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -183,12 +185,12 @@ export function Explore() {
           setGridLimit((prev) => prev + GRID_PAGE_SIZE);
         }
       },
-      { threshold: 0 }
+      { threshold: 0, rootMargin: '200px' }
     );
 
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [searchType]);
+  }, [searchType, hasMoreMedia, gridLimit]);
 
   // Auto-search from URL query param (e.g. /explore?q=%23bitcoin)
   useEffect(() => {
@@ -450,10 +452,14 @@ export function Explore() {
             ) : null}
           </div>
 
-          {/* Infinite scroll sentinel */}
-          {gridLimit < totalMediaCount && (
+          {/* Infinite scroll sentinel — always rendered so observer can attach */}
+          {mediaNotes.length > 0 && (
             <div ref={sentinelRef} className="py-4 text-center">
-              <Loader2 className="animate-spin mx-auto text-zinc-600" size={20} />
+              {hasMoreMedia ? (
+                <Loader2 className="animate-spin mx-auto text-zinc-600" size={20} />
+              ) : (
+                <p className="text-xs text-zinc-600">No more media</p>
+              )}
             </div>
           )}
         </>

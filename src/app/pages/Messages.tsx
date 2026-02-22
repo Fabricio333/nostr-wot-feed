@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { Link } from 'react-router';
-import { Search, PenSquare, Loader2, User } from 'lucide-react';
+import { Search, PenSquare, Loader2, User, Shield, ShieldOff, ChevronDown, ChevronUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useDMStore } from '@/stores/dmStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -23,6 +23,8 @@ export function Messages() {
     }
   }, [myPubkey, initialized]);
 
+  const [showUntrusted, setShowUntrusted] = useState(false);
+
   // Filter conversations by search
   const filtered = conversations.filter((conv) => {
     if (!search.trim()) return true;
@@ -30,6 +32,16 @@ export function Messages() {
     const name = profile?.displayName || profile?.name || '';
     return name.toLowerCase().includes(search.toLowerCase());
   });
+
+  // Split into trusted (in WoT) and untrusted
+  const trustedConversations = useMemo(
+    () => filtered.filter((conv) => conv.isTrusted),
+    [filtered]
+  );
+  const untrustedConversations = useMemo(
+    () => filtered.filter((conv) => !conv.isTrusted),
+    [filtered]
+  );
 
   // Active in last 5 minutes — users from my follows who published recently
   const fiveMinAgo = Math.floor(Date.now() / 1000) - 5 * 60;
@@ -83,12 +95,47 @@ export function Messages() {
         </div>
       )}
 
-      {/* Conversation list */}
-      <div className="flex flex-col">
-        {filtered.map((conv) => (
-          <ConversationRow key={conv.partnerPubkey} conv={conv} />
-        ))}
-      </div>
+      {/* Trusted conversations */}
+      {trustedConversations.length > 0 && (
+        <div>
+          <div className="px-4 py-2 flex items-center gap-1.5">
+            <Shield size={12} className="text-purple-400" />
+            <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Web of Trust</span>
+          </div>
+          <div className="flex flex-col">
+            {trustedConversations.map((conv) => (
+              <ConversationRow key={conv.partnerPubkey} conv={conv} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Untrusted conversations — collapsed by default */}
+      {untrustedConversations.length > 0 && (
+        <div className="mt-2">
+          <button
+            onClick={() => setShowUntrusted(!showUntrusted)}
+            className="w-full px-4 py-2 flex items-center gap-1.5 hover:bg-zinc-900/50 transition-colors"
+          >
+            <ShieldOff size={12} className="text-zinc-500" />
+            <span className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
+              Not in your WoT
+            </span>
+            <span className="text-xs text-zinc-600 ml-1">({untrustedConversations.length})</span>
+            {showUntrusted
+              ? <ChevronUp size={12} className="text-zinc-500 ml-auto" />
+              : <ChevronDown size={12} className="text-zinc-500 ml-auto" />
+            }
+          </button>
+          {showUntrusted && (
+            <div className="flex flex-col opacity-60">
+              {untrustedConversations.map((conv) => (
+                <ConversationRow key={conv.partnerPubkey} conv={conv} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Empty state */}
       {initialized && conversations.length === 0 && (
