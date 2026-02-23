@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+@import "tw-animate-css";
+
+@utility overscroll-contain-y {
+  overscroll-behavior-y: contain;
+}
+
+@utility no-scrollbar {
+  &::-webkit-scrollbar {
+    display: none;
+  }
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+html, body {
+  background-color: #000;
+}

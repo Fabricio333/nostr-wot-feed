@@ -13,6 +13,12 @@ web-build/
 .idea/
 *.iml
 
+# Next.js
+.next/
+
+# Worktrees
+.worktrees/
+
 # macOS
 .DS_Store
 

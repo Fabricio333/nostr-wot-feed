@@ -1,0 +1,62 @@
+{
+  "nav": {
+    "home": "Inicio",
+    "explore": "Explorar",
+    "messages": "Mensajes",
+    "create": "Crear",
+    "profile": "Perfil",
+    "settings": "Ajustes",
+    "logout": "Cerrar sesión"
+  },
+  "feed": {
+    "loading": "Cargando...",
+    "noMorePosts": "No hay más publicaciones en las últimas {hours} horas",
+    "loadOlder": "Cargar publicaciones anteriores",
+    "global": "Global",
+    "following": "Siguiendo"
+  },
+  "login": {
+    "title": "Nostr WTF",
+    "subtitle": "Feed de Confianza",
+    "extension": "Iniciar con Extensión",
+    "bunker": "Iniciar con Bunker",
+    "nsec": "Iniciar con nsec",
+    "readOnly": "Navegar como Invitado",
+    "createAccount": "Crear Cuenta"
+  },
+  "common": {
+    "copy": "Copiar",
+    "copied": "¡Copiado!",
+    "mute": "Silenciar",
+    "unmute": "Desilenciar",
+    "follow": "Seguir",
+    "unfollow": "Dejar de seguir",
+    "reply": "Responder",
+    "repost": "Republicar",
+    "like": "Me gusta",
+    "share": "Compartir",
+    "cancel": "Cancelar",
+    "save": "Guardar",
+    "delete": "Eliminar",
+    "edit": "Editar",
+    "send": "Enviar"
+  },
+  "settings": {
+    "title": "Ajustes",
+    "wot": "Red de Confianza",
+    "relays": "Relays",
+    "appearance": "Apariencia"
+  },
+  "profile": {
+    "followers": "Seguidores",
+    "following": "Siguiendo",
+    "editProfile": "Editar Perfil",
+    "notes": "Notas",
+    "replies": "Respuestas",
+    "media": "Medios"
+  },
+  "explore": {
+    "title": "Explorar",
+    "searchPlaceholder": "Buscar hashtags o npub..."
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "nav": {
+    "home": "Home",
+    "explore": "Explore",
+    "messages": "Messages",
+    "create": "Create",
+    "profile": "Profile",
+    "settings": "Settings",
+    "logout": "Logout"
+  },
+  "feed": {
+    "loading": "Loading...",
+    "noMorePosts": "No more posts in the last {hours} hours",
+    "loadOlder": "Load older posts",
+    "global": "Global",
+    "following": "Following"
+  },
+  "login": {
+    "title": "Nostr WTF",
+    "subtitle": "Web of Trust Feed",
+    "extension": "Login with Extension",
+    "bunker": "Login with Bunker",
+    "nsec": "Login with nsec",
+    "readOnly": "Browse as Guest",
+    "createAccount": "Create Account"
+  },
+  "common": {
+    "copy": "Copy",
+    "copied": "Copied!",
+    "mute": "Mute",
+    "unmute": "Unmute",
+    "follow": "Follow",
+    "unfollow": "Unfollow",
+    "reply": "Reply",
+    "repost": "Repost",
+    "like": "Like",
+    "share": "Share",
+    "cancel": "Cancel",
+    "save": "Save",
+    "delete": "Delete",
+    "edit": "Edit",
+    "send": "Send"
+  },
+  "settings": {
+    "title": "Settings",
+    "wot": "Web of Trust",
+    "relays": "Relays",
+    "appearance": "Appearance"
+  },
+  "profile": {
+    "followers": "Followers",
+    "following": "Following",
+    "editProfile": "Edit Profile",
+    "notes": "Notes",
+    "replies": "Replies",
+    "media": "Media"
+  },
+  "explore": {
+    "title": "Explore",
+    "searchPlaceholder": "Search hashtags or npub..."
+  }
+}

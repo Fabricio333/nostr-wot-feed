@@ -1,0 +1,166 @@
+'use client';
+
+import React, { useEffect } from 'react';
+import { Home, MessageCircle, PlusSquare, User, Search, LogOut, Settings as SettingsIcon } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { useAuthStore } from '@/stores/authStore';
+import { useProfileStore } from '@/stores/profileStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { Profiles } from '@/lib/content/profiles';
+import { loadSettings } from '@/lib/storage/settings';
+import { truncateNpub } from '@/utils/helpers';
+import { WoTLogo } from '@/components/brand/WoTLogo';
+import { TrendingSidebar } from '@/components/layout/TrendingSidebar';
+import { Link, usePathname, useRouter } from '@/i18n/navigation';
+
+export function AppShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const { isLoggedIn, loading, pubkey, logout, initialize } = useAuthStore();
+  const { updateTick } = useProfileStore();
+  const settingsStore = useSettingsStore();
+
+  const isMessageDetail = pathname.startsWith('/messages/') && pathname.split('/').length > 2;
+  const isCreate = pathname === '/create';
+  const hideBottomNav = isMessageDetail || isCreate;
+
+  // Initialize auth on mount
+  useEffect(() => {
+    loadSettings();
+    settingsStore.load();
+    initialize();
+  }, []);
+
+  // Wire profile updates
+  useEffect(() => {
+    Profiles.onUpdate = (pubkeys) => {
+      useProfileStore.getState().onProfilesUpdated(pubkeys);
+    };
+  }, []);
+
+  // Request own profile
+  useEffect(() => {
+    if (pubkey) {
+      Profiles.request(pubkey);
+    }
+  }, [pubkey]);
+
+  // Redirect to login if not logged in
+  useEffect(() => {
+    if (!loading && !isLoggedIn) {
+      router.replace('/login');
+    }
+  }, [loading, isLoggedIn, router]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-black text-white">
+        <div className="animate-pulse text-lg">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!isLoggedIn) return null;
+
+  const profile = pubkey ? Profiles.get(pubkey) : null;
+  const displayName = profile?.displayName || profile?.name || (pubkey ? truncateNpub(pubkey) : 'Anonymous');
+  const handle = profile?.name ? `@${profile.name}` : (pubkey ? truncateNpub(pubkey) : '@anonymous');
+
+  return (
+    <div className="flex h-screen w-full bg-black text-white overflow-hidden">
+      {/* Desktop Sidebar */}
+      <aside className="hidden md:flex flex-col w-64 border-r border-zinc-800 p-4">
+        <div className="mb-8 px-4 flex items-center gap-2">
+          <WoTLogo size={28} className="text-purple-400 flex-shrink-0" />
+          <h1 className="text-2xl font-bold bg-gradient-to-r from-purple-500 to-pink-500 bg-clip-text text-transparent">Nostr WTF</h1>
+        </div>
+
+        <nav className="flex-1 space-y-2">
+          <SidebarLink href="/" icon={Home} label="Home" currentPath={pathname} />
+          <SidebarLink href="/explore" icon={Search} label="Explore" currentPath={pathname} />
+          <SidebarLink href="/messages" icon={MessageCircle} label="Messages" currentPath={pathname} />
+          <SidebarLink href="/create" icon={PlusSquare} label="Create" currentPath={pathname} />
+          <SidebarLink href="/profile" icon={User} label="Profile" currentPath={pathname} />
+          <SidebarLink href="/settings" icon={SettingsIcon} label="Settings" currentPath={pathname} />
+        </nav>
+
+        <div className="p-4 border-t border-zinc-800 space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-zinc-700 overflow-hidden flex items-center justify-center">
+              {profile?.picture ? (
+                <img src={profile.picture} alt="User" className="w-full h-full object-cover" />
+              ) : (
+                <User size={20} className="text-zinc-400" />
+              )}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="font-bold text-sm truncate">{displayName}</p>
+              <p className="text-zinc-500 text-xs truncate">{handle}</p>
+            </div>
+          </div>
+          <button
+            onClick={async () => { await logout(); router.push('/login'); }}
+            className="flex items-center gap-2 text-zinc-500 hover:text-red-400 text-sm transition-colors w-full"
+          >
+            <LogOut size={16} />
+            <span>Logout</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <main className="flex-1 overflow-y-auto relative w-full md:max-w-2xl md:mx-auto md:border-r md:border-zinc-800 no-scrollbar overscroll-contain-y bg-black">
+        <div className={cn("min-h-full md:pb-0", hideBottomNav ? "pb-0" : "pb-20")}>
+          {children}
+        </div>
+      </main>
+
+      {/* Right Sidebar (Desktop only) */}
+      <aside className="hidden lg:block w-80 p-6 pl-8 overflow-y-auto no-scrollbar">
+        <TrendingSidebar />
+      </aside>
+
+      {/* Mobile Bottom Nav */}
+      {!hideBottomNav && (
+        <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-black border-t border-zinc-800 flex justify-around items-center p-3 z-50 pb-safe">
+          <MobileNavLink href="/" icon={Home} currentPath={pathname} />
+          <MobileNavLink href="/explore" icon={Search} currentPath={pathname} />
+          <MobileNavLink href="/create" icon={PlusSquare} currentPath={pathname} />
+          <MobileNavLink href="/messages" icon={MessageCircle} currentPath={pathname} />
+          <MobileNavLink href="/profile" icon={User} currentPath={pathname} />
+        </nav>
+      )}
+    </div>
+  );
+}
+
+function SidebarLink({ href, icon: Icon, label, currentPath }: { href: string; icon: any; label: string; currentPath: string }) {
+  const isActive = href === '/' ? currentPath === '/' : currentPath.startsWith(href);
+  return (
+    <Link
+      href={href}
+      className={cn(
+        "flex items-center gap-4 px-4 py-3 rounded-full transition-colors text-lg",
+        isActive ? "font-bold text-white bg-zinc-900" : "text-zinc-400 hover:bg-zinc-900/50 hover:text-zinc-200"
+      )}
+    >
+      <Icon size={26} strokeWidth={2.5} />
+      <span>{label}</span>
+    </Link>
+  );
+}
+
+function MobileNavLink({ href, icon: Icon, currentPath }: { href: string; icon: any; currentPath: string }) {
+  const isActive = href === '/' ? currentPath === '/' : currentPath.startsWith(href);
+  return (
+    <Link
+      href={href}
+      className={cn(
+        "p-2 rounded-full transition-colors",
+        isActive ? "text-white" : "text-zinc-500"
+      )}
+    >
+      <Icon size={28} strokeWidth={2.5} />
+    </Link>
+  );
+}
